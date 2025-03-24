@@ -48,7 +48,7 @@ func TestCtxLocker(t *testing.T) {
 			tt.locker.Unlock()
 
 			// Wait for the lock to be released before the next test
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(500 * time.Millisecond)
 			tt.locker.Lock()
 			tt.locker.Unlock()
 
@@ -72,7 +72,7 @@ func TestCtxLocker(t *testing.T) {
 				}
 			}()
 
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(500 * time.Millisecond)
 			close(ch)
 			<-done
 

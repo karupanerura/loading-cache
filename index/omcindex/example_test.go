@@ -50,7 +50,8 @@ func Example_basic() {
 	}
 
 	// Print results - note that user4 won't be in the results as it doesn't exist
-	for user, prods := range userProducts {
+	for _, user := range []string{"user1", "user2", "user4"} {
+		prods := userProducts[user]
 		fmt.Printf("Products for %s: %v\n", user, prods)
 	}
 
@@ -58,6 +59,7 @@ func Example_basic() {
 	// Products for user1: [101 102 103]
 	// Products for user1: [101 102 103]
 	// Products for user2: [201 202]
+	// Products for user4: []
 }
 
 // Example_intervalUpdater demonstrates using OnMemoryIndex with IntervalIndexUpdater

@@ -16,13 +16,15 @@ func TestCtxSyncCond(t *testing.T) {
 	t.Run("WaitCtx", func(t *testing.T) {
 		t.Parallel()
 
-		// Create a mutex and condition
-		mu := &sync.Mutex{}
-		cond := sync.NewCond(mu)
-		ctxCond := &ctxsync.CtxSyncCond{Cond: cond}
-
 		// Test with canceled context
 		t.Run("CanceledContext", func(t *testing.T) {
+			t.Parallel()
+
+			// Create a mutex and condition
+			mu := &sync.Mutex{}
+			cond := sync.NewCond(mu)
+			ctxCond := &ctxsync.CtxSyncCond{Cond: cond}
+
 			mu.Lock()
 
 			ctx, cancel := context.WithCancel(context.Background())
@@ -43,19 +45,14 @@ func TestCtxSyncCond(t *testing.T) {
 		t.Run("SuccessfulWait", func(t *testing.T) {
 			t.Parallel()
 
+			// Create a mutex and condition
+			mu := &sync.Mutex{}
+			cond := sync.NewCond(mu)
+			ctxCond := &ctxsync.CtxSyncCond{Cond: cond}
+
 			ctx := context.Background()
+
 			done := make(chan struct{})
-
-			go func() {
-				// Give time for the WaitCtx call to be set up
-				time.Sleep(100 * time.Millisecond)
-
-				// Signal the condition
-				mu.Lock()
-				cond.Signal()
-				mu.Unlock()
-			}()
-
 			go func() {
 				mu.Lock()
 				if err := ctxCond.WaitCtx(ctx); err != nil {
@@ -64,11 +61,21 @@ func TestCtxSyncCond(t *testing.T) {
 				close(done)
 			}()
 
+			go func() {
+				// Give time for the WaitCtx call to be set up
+				time.Sleep(500 * time.Millisecond)
+
+				// Signal the condition
+				mu.Lock()
+				cond.Signal()
+				mu.Unlock()
+			}()
+
 			// Wait for WaitCtx to complete or timeout
 			select {
 			case <-done:
 				// Success, WaitCtx completed
-			case <-time.After(2 * time.Second):
+			case <-time.After(3 * time.Second):
 				t.Error("WaitCtx did not complete within expected time")
 			}
 
@@ -79,6 +86,11 @@ func TestCtxSyncCond(t *testing.T) {
 		// Test context cancellation while waiting
 		t.Run("CancellationDuringWait", func(t *testing.T) {
 			t.Parallel()
+
+			// Create a mutex and condition
+			mu := &sync.Mutex{}
+			cond := sync.NewCond(mu)
+			ctxCond := &ctxsync.CtxSyncCond{Cond: cond}
 
 			ctx, cancel := context.WithCancel(context.Background())
 			done := make(chan struct{})
@@ -93,7 +105,7 @@ func TestCtxSyncCond(t *testing.T) {
 			}()
 
 			// Wait a bit before canceling
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(500 * time.Millisecond)
 			cancel()
 
 			// Wait for WaitCtx to complete or timeout

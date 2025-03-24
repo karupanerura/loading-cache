@@ -233,6 +233,7 @@ func TestLoadAndStoreMulti_Parallel_EachKeys(t *testing.T) {
 	source := &source.FunctionsSource[int, string]{
 		GetMultiFunc: func(_ context.Context, keys []int) ([]*loadingcache.CacheEntry[int, string], error) {
 			exec.Wait()
+			time.Sleep(100 * time.Millisecond)
 			atomic.AddUint32(&callCount, 1)
 			atomic.AddUint32(&keysCount, uint32(len(keys)))
 			entries := make([]*loadingcache.CacheEntry[int, string], len(keys))
@@ -286,7 +287,7 @@ func TestLoadAndStoreMulti_Parallel_EachKeys(t *testing.T) {
 	}
 
 	// Allow a small delay for all goroutines to reach the exec.Wait()
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 	exec.Done()
 	wg.Wait()
 
