@@ -67,7 +67,7 @@ func main() {
 				return &loadingcache.CacheEntry[int, *User]{
 					Entry: loadingcache.Entry[int, *User]{
 						Key:   id,
-						Value: User{ID: id, Name: "Alice", Email: "alice@example.com"},
+						Value: &User{ID: id, Name: "Alice", Email: "alice@example.com"},
 					},
 					ExpiresAt: time.Now().Add(1 * time.Hour),
 				}, nil
@@ -122,8 +122,8 @@ storage := memstorage.NewInMemoryStorage[int, *User]()
 
 // Or with custom options
 storage := memstorage.NewInMemoryStorage[int, *User](
-    memstorage.WithBucketsSize[int, User](512),
-    memstorage.WithCloner[int, User](customCloner),
+    memstorage.WithBucketsSize[int, *User](512),
+    memstorage.WithCloner[int, *User](customCloner),
 )
 ```
 
@@ -153,6 +153,19 @@ src := &source.FunctionsSource[int, *User]{
         // Implementation for multi-key lookup
     },
 }
+```
+
+## Advanced Usage
+
+### Negative Caching
+
+```go
+// Return a negative cache entry for non-existent keys
+return &loadingcache.CacheEntry[int, User]{
+    Entry:         loadingcache.Entry[int, User]{Key: id},
+    ExpiresAt:     time.Now().Add(5 * time.Minute),
+    NegativeCache: true,
+}, nil
 ```
 
 ### Secondary Indexes
@@ -196,19 +209,6 @@ orIndex := &index.OrIndex[string, bool, int]{
     Left:  categoryIndex, 
     Right: premiumIndex,
 }
-```
-
-## Advanced Usage
-
-### Negative Caching
-
-```go
-// Return a negative cache entry for non-existent keys
-return &loadingcache.CacheEntry[int, User]{
-    Entry:         loadingcache.Entry[int, User]{Key: id},
-    ExpiresAt:     time.Now().Add(5 * time.Minute),
-    NegativeCache: true,
-}, nil
 ```
 
 ### Background Index Updates
