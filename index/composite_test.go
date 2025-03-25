@@ -37,7 +37,7 @@ func TestOrIndex_Get(t *testing.T) {
 				}
 				return nil, nil
 			},
-			key:        index.Keys[int8, uint8]{Left: 1, Right: 2},
+			key:        index.NewKeys[int8, uint8](1, 2),
 			wantResult: []uint16{10, 11, 20, 21},
 			wantErr:    nil,
 		},
@@ -55,7 +55,7 @@ func TestOrIndex_Get(t *testing.T) {
 				}
 				return nil, nil
 			},
-			key:        index.Keys[int8, uint8]{Left: 1, Right: 2},
+			key:        index.NewKeys[int8, uint8](1, 2),
 			wantResult: []uint16{10, 11, 12, 13},
 			wantErr:    nil,
 		},
@@ -67,7 +67,7 @@ func TestOrIndex_Get(t *testing.T) {
 			rightFunc: func(ctx context.Context, key uint8) ([]uint16, error) {
 				return []uint16{20, 21}, nil
 			},
-			key:        index.Keys[int8, uint8]{Left: 1, Right: 2},
+			key:        index.NewKeys[int8, uint8](1, 2),
 			wantResult: []uint16{20, 21},
 			wantErr:    nil,
 		},
@@ -79,7 +79,7 @@ func TestOrIndex_Get(t *testing.T) {
 			rightFunc: func(ctx context.Context, key uint8) ([]uint16, error) {
 				return nil, nil
 			},
-			key:        index.Keys[int8, uint8]{Left: 1, Right: 2},
+			key:        index.NewKeys[int8, uint8](1, 2),
 			wantResult: []uint16{10, 11},
 			wantErr:    nil,
 		},
@@ -91,7 +91,7 @@ func TestOrIndex_Get(t *testing.T) {
 			rightFunc: func(ctx context.Context, key uint8) ([]uint16, error) {
 				return nil, nil
 			},
-			key:        index.Keys[int8, uint8]{Left: 1, Right: 2},
+			key:        index.NewKeys[int8, uint8](1, 2),
 			wantResult: nil,
 			wantErr:    nil,
 		},
@@ -103,7 +103,7 @@ func TestOrIndex_Get(t *testing.T) {
 			rightFunc: func(ctx context.Context, key uint8) ([]uint16, error) {
 				return []uint16{20, 21}, nil
 			},
-			key:        index.Keys[int8, uint8]{Left: 1, Right: 2},
+			key:        index.NewKeys[int8, uint8](1, 2),
 			wantResult: nil,
 			wantErr:    leftErr,
 		},
@@ -115,7 +115,7 @@ func TestOrIndex_Get(t *testing.T) {
 			rightFunc: func(ctx context.Context, key uint8) ([]uint16, error) {
 				return nil, rightErr
 			},
-			key:        index.Keys[int8, uint8]{Left: 1, Right: 2},
+			key:        index.NewKeys[int8, uint8](1, 2),
 			wantResult: nil,
 			wantErr:    rightErr,
 		},
@@ -171,6 +171,68 @@ func TestOrIndex_GetMulti(t *testing.T) {
 		wantErr       error
 	}{
 		{
+			name: "successful get multi from empty included keys in left",
+			leftGetMulti: func(ctx context.Context, keys []int8) (map[int8][]uint16, error) {
+				result := make(map[int8][]uint16)
+				for _, key := range keys {
+					if key == 1 {
+						result[key] = []uint16{10, 11, 12}
+					} else if key == 3 {
+						result[key] = []uint16{30, 31, 32}
+					}
+				}
+				return result, nil
+			},
+			rightGetMulti: func(ctx context.Context, keys []uint8) (map[uint8][]uint16, error) {
+				result := make(map[uint8][]uint16)
+				for _, key := range keys {
+					if key == 2 {
+						result[key] = []uint16{11, 12, 13}
+					} else if key == 4 {
+						result[key] = []uint16{31, 32, 33}
+					}
+				}
+				return result, nil
+			},
+			keys: index.ZipKeys([]int8{1}, []uint8{2, 4}),
+			wantResult: map[index.Keys[int8, uint8]][]uint16{
+				index.NewKeys[int8, uint8](1, 2): {10, 11, 12, 13},
+				index.RightKey[int8, uint8](4):   {31, 32, 33},
+			},
+			wantErr: nil,
+		},
+		{
+			name: "successful get multi from empty included keys in right",
+			leftGetMulti: func(ctx context.Context, keys []int8) (map[int8][]uint16, error) {
+				result := make(map[int8][]uint16)
+				for _, key := range keys {
+					if key == 1 {
+						result[key] = []uint16{10, 11, 12}
+					} else if key == 3 {
+						result[key] = []uint16{30, 31, 32}
+					}
+				}
+				return result, nil
+			},
+			rightGetMulti: func(ctx context.Context, keys []uint8) (map[uint8][]uint16, error) {
+				result := make(map[uint8][]uint16)
+				for _, key := range keys {
+					if key == 2 {
+						result[key] = []uint16{11, 12, 13}
+					} else if key == 4 {
+						result[key] = []uint16{31, 32, 33}
+					}
+				}
+				return result, nil
+			},
+			keys: index.ZipKeys([]int8{1, 3}, []uint8{2}),
+			wantResult: map[index.Keys[int8, uint8]][]uint16{
+				index.NewKeys[int8, uint8](1, 2): {10, 11, 12, 13},
+				index.LeftKey[int8, uint8](3):    {30, 31, 32},
+			},
+			wantErr: nil,
+		},
+		{
 			name: "successful get multi with non-overlapping results",
 			leftGetMulti: func(ctx context.Context, keys []int8) (map[int8][]uint16, error) {
 				result := make(map[int8][]uint16)
@@ -195,12 +257,12 @@ func TestOrIndex_GetMulti(t *testing.T) {
 				return result, nil
 			},
 			keys: []index.Keys[int8, uint8]{
-				{Left: 1, Right: 2},
-				{Left: 3, Right: 4},
+				index.NewKeys[int8, uint8](1, 2),
+				index.NewKeys[int8, uint8](3, 4),
 			},
 			wantResult: map[index.Keys[int8, uint8]][]uint16{
-				{Left: 1, Right: 2}: {10, 11, 20, 21},
-				{Left: 3, Right: 4}: {30, 31, 40, 41},
+				index.NewKeys[int8, uint8](1, 2): {10, 11, 20, 21},
+				index.NewKeys[int8, uint8](3, 4): {30, 31, 40, 41},
 			},
 			wantErr: nil,
 		},
@@ -229,12 +291,12 @@ func TestOrIndex_GetMulti(t *testing.T) {
 				return result, nil
 			},
 			keys: []index.Keys[int8, uint8]{
-				{Left: 1, Right: 2},
-				{Left: 3, Right: 4},
+				index.NewKeys[int8, uint8](1, 2),
+				index.NewKeys[int8, uint8](3, 4),
 			},
 			wantResult: map[index.Keys[int8, uint8]][]uint16{
-				{Left: 1, Right: 2}: {10, 11, 12, 13},
-				{Left: 3, Right: 4}: {30, 31, 32, 33},
+				index.NewKeys[int8, uint8](1, 2): {10, 11, 12, 13},
+				index.NewKeys[int8, uint8](3, 4): {30, 31, 32, 33},
 			},
 			wantErr: nil,
 		},
@@ -262,14 +324,31 @@ func TestOrIndex_GetMulti(t *testing.T) {
 				return result, nil
 			},
 			keys: []index.Keys[int8, uint8]{
-				{Left: 1, Right: 2},
-				{Left: 3, Right: 4},
+				index.NewKeys[int8, uint8](1, 2),
+				index.NewKeys[int8, uint8](3, 4),
 			},
 			wantResult: map[index.Keys[int8, uint8]][]uint16{
-				{Left: 1, Right: 2}: {10, 11, 20, 21},
-				{Left: 3, Right: 4}: {40, 41},
+				index.NewKeys[int8, uint8](1, 2): {10, 11, 20, 21},
+				index.NewKeys[int8, uint8](3, 4): {40, 41},
 			},
 			wantErr: nil,
+		},
+		{
+			name: "successful get empty results",
+			leftGetMulti: func(ctx context.Context, keys []int8) (map[int8][]uint16, error) {
+				result := make(map[int8][]uint16)
+				return result, nil
+			},
+			rightGetMulti: func(ctx context.Context, keys []uint8) (map[uint8][]uint16, error) {
+				result := make(map[uint8][]uint16)
+				return result, nil
+			},
+			keys: []index.Keys[int8, uint8]{
+				index.NewKeys[int8, uint8](1, 2),
+				index.NewKeys[int8, uint8](3, 4),
+			},
+			wantResult: map[index.Keys[int8, uint8]][]uint16{},
+			wantErr:    nil,
 		},
 		{
 			name: "error from left index",
@@ -288,8 +367,8 @@ func TestOrIndex_GetMulti(t *testing.T) {
 				return result, nil
 			},
 			keys: []index.Keys[int8, uint8]{
-				{Left: 1, Right: 2},
-				{Left: 3, Right: 4},
+				index.NewKeys[int8, uint8](1, 2),
+				index.NewKeys[int8, uint8](3, 4),
 			},
 			wantResult: nil,
 			wantErr:    leftErr,
@@ -311,8 +390,8 @@ func TestOrIndex_GetMulti(t *testing.T) {
 				return nil, rightErr
 			},
 			keys: []index.Keys[int8, uint8]{
-				{Left: 1, Right: 2},
-				{Left: 3, Right: 4},
+				index.NewKeys[int8, uint8](1, 2),
+				index.NewKeys[int8, uint8](3, 4),
 			},
 			wantResult: nil,
 			wantErr:    rightErr,
@@ -392,7 +471,7 @@ func TestAndIndex_Get(t *testing.T) {
 				}
 				return nil, nil
 			},
-			key:        index.Keys[int8, uint8]{Left: 1, Right: 2},
+			key:        index.NewKeys[int8, uint8](1, 2),
 			wantResult: []uint16{11, 12},
 			wantErr:    nil,
 		},
@@ -410,7 +489,7 @@ func TestAndIndex_Get(t *testing.T) {
 				}
 				return nil, nil
 			},
-			key:        index.Keys[int8, uint8]{Left: 1, Right: 2},
+			key:        index.NewKeys[int8, uint8](1, 2),
 			wantResult: nil,
 			wantErr:    nil,
 		},
@@ -422,7 +501,7 @@ func TestAndIndex_Get(t *testing.T) {
 			rightFunc: func(ctx context.Context, key uint8) ([]uint16, error) {
 				return []uint16{20, 21}, nil
 			},
-			key:        index.Keys[int8, uint8]{Left: 1, Right: 2},
+			key:        index.NewKeys[int8, uint8](1, 2),
 			wantResult: nil,
 			wantErr:    nil,
 		},
@@ -434,7 +513,7 @@ func TestAndIndex_Get(t *testing.T) {
 			rightFunc: func(ctx context.Context, key uint8) ([]uint16, error) {
 				return nil, nil
 			},
-			key:        index.Keys[int8, uint8]{Left: 1, Right: 2},
+			key:        index.NewKeys[int8, uint8](1, 2),
 			wantResult: nil,
 			wantErr:    nil,
 		},
@@ -446,7 +525,43 @@ func TestAndIndex_Get(t *testing.T) {
 			rightFunc: func(ctx context.Context, key uint8) ([]uint16, error) {
 				return nil, nil
 			},
-			key:        index.Keys[int8, uint8]{Left: 1, Right: 2},
+			key:        index.NewKeys[int8, uint8](1, 2),
+			wantResult: nil,
+			wantErr:    nil,
+		},
+		{
+			name: "successful get with left results for left key",
+			leftFunc: func(ctx context.Context, key int8) ([]uint16, error) {
+				return []uint16{10, 11}, nil
+			},
+			rightFunc: func(ctx context.Context, key uint8) ([]uint16, error) {
+				return nil, errors.New("unexpected call to right index")
+			},
+			key:        index.LeftKey[int8, uint8](1),
+			wantResult: []uint16{10, 11},
+			wantErr:    nil,
+		},
+		{
+			name: "successful get with right results for right key",
+			leftFunc: func(ctx context.Context, key int8) ([]uint16, error) {
+				return nil, errors.New("unexpected call to left index")
+			},
+			rightFunc: func(ctx context.Context, key uint8) ([]uint16, error) {
+				return []uint16{20, 21}, nil
+			},
+			key:        index.RightKey[int8, uint8](2),
+			wantResult: []uint16{20, 21},
+			wantErr:    nil,
+		},
+		{
+			name: "successful get with empty results from both",
+			leftFunc: func(ctx context.Context, key int8) ([]uint16, error) {
+				return nil, nil
+			},
+			rightFunc: func(ctx context.Context, key uint8) ([]uint16, error) {
+				return nil, nil
+			},
+			key:        index.NewKeys[int8, uint8](1, 2),
 			wantResult: nil,
 			wantErr:    nil,
 		},
@@ -458,7 +573,7 @@ func TestAndIndex_Get(t *testing.T) {
 			rightFunc: func(ctx context.Context, key uint8) ([]uint16, error) {
 				return []uint16{20, 21}, nil
 			},
-			key:        index.Keys[int8, uint8]{Left: 1, Right: 2},
+			key:        index.NewKeys[int8, uint8](1, 2),
 			wantResult: nil,
 			wantErr:    leftErr,
 		},
@@ -470,7 +585,7 @@ func TestAndIndex_Get(t *testing.T) {
 			rightFunc: func(ctx context.Context, key uint8) ([]uint16, error) {
 				return nil, rightErr
 			},
-			key:        index.Keys[int8, uint8]{Left: 1, Right: 2},
+			key:        index.NewKeys[int8, uint8](1, 2),
 			wantResult: nil,
 			wantErr:    rightErr,
 		},
@@ -526,6 +641,68 @@ func TestAndIndex_GetMulti(t *testing.T) {
 		wantErr       error
 	}{
 		{
+			name: "successful get multi from empty included keys in left",
+			leftGetMulti: func(ctx context.Context, keys []int8) (map[int8][]uint16, error) {
+				result := make(map[int8][]uint16)
+				for _, key := range keys {
+					if key == 1 {
+						result[key] = []uint16{10, 11, 12}
+					} else if key == 3 {
+						result[key] = []uint16{30, 31, 32}
+					}
+				}
+				return result, nil
+			},
+			rightGetMulti: func(ctx context.Context, keys []uint8) (map[uint8][]uint16, error) {
+				result := make(map[uint8][]uint16)
+				for _, key := range keys {
+					if key == 2 {
+						result[key] = []uint16{11, 12, 13}
+					} else if key == 4 {
+						result[key] = []uint16{31, 32, 33}
+					}
+				}
+				return result, nil
+			},
+			keys: index.ZipKeys([]int8{1}, []uint8{2, 4}),
+			wantResult: map[index.Keys[int8, uint8]][]uint16{
+				index.NewKeys[int8, uint8](1, 2): {11, 12},
+				index.RightKey[int8, uint8](4):   {31, 32, 33},
+			},
+			wantErr: nil,
+		},
+		{
+			name: "successful get multi from empty included keys in right",
+			leftGetMulti: func(ctx context.Context, keys []int8) (map[int8][]uint16, error) {
+				result := make(map[int8][]uint16)
+				for _, key := range keys {
+					if key == 1 {
+						result[key] = []uint16{10, 11, 12}
+					} else if key == 3 {
+						result[key] = []uint16{30, 31, 32}
+					}
+				}
+				return result, nil
+			},
+			rightGetMulti: func(ctx context.Context, keys []uint8) (map[uint8][]uint16, error) {
+				result := make(map[uint8][]uint16)
+				for _, key := range keys {
+					if key == 2 {
+						result[key] = []uint16{11, 12, 13}
+					} else if key == 4 {
+						result[key] = []uint16{31, 32, 33}
+					}
+				}
+				return result, nil
+			},
+			keys: index.ZipKeys([]int8{1, 3}, []uint8{2}),
+			wantResult: map[index.Keys[int8, uint8]][]uint16{
+				index.NewKeys[int8, uint8](1, 2): {11, 12},
+				index.LeftKey[int8, uint8](3):    {30, 31, 32},
+			},
+			wantErr: nil,
+		},
+		{
 			name: "successful get multi with overlapping results",
 			leftGetMulti: func(ctx context.Context, keys []int8) (map[int8][]uint16, error) {
 				result := make(map[int8][]uint16)
@@ -550,12 +727,12 @@ func TestAndIndex_GetMulti(t *testing.T) {
 				return result, nil
 			},
 			keys: []index.Keys[int8, uint8]{
-				{Left: 1, Right: 2},
-				{Left: 3, Right: 4},
+				index.NewKeys[int8, uint8](1, 2),
+				index.NewKeys[int8, uint8](3, 4),
 			},
 			wantResult: map[index.Keys[int8, uint8]][]uint16{
-				{Left: 1, Right: 2}: {11, 12},
-				{Left: 3, Right: 4}: {31, 32},
+				index.NewKeys[int8, uint8](1, 2): {11, 12},
+				index.NewKeys[int8, uint8](3, 4): {31, 32},
 			},
 			wantErr: nil,
 		},
@@ -584,12 +761,12 @@ func TestAndIndex_GetMulti(t *testing.T) {
 				return result, nil
 			},
 			keys: []index.Keys[int8, uint8]{
-				{Left: 1, Right: 2},
-				{Left: 3, Right: 4},
+				index.NewKeys[int8, uint8](1, 2),
+				index.NewKeys[int8, uint8](3, 4),
 			},
 			wantResult: map[index.Keys[int8, uint8]][]uint16{
-				{Left: 1, Right: 2}: nil,
-				{Left: 3, Right: 4}: nil,
+				index.NewKeys[int8, uint8](1, 2): nil,
+				index.NewKeys[int8, uint8](3, 4): nil,
 			},
 			wantErr: nil,
 		},
@@ -617,14 +794,30 @@ func TestAndIndex_GetMulti(t *testing.T) {
 				return result, nil
 			},
 			keys: []index.Keys[int8, uint8]{
-				{Left: 1, Right: 2},
-				{Left: 3, Right: 4},
+				index.NewKeys[int8, uint8](1, 2),
+				index.NewKeys[int8, uint8](3, 4),
 			},
 			wantResult: map[index.Keys[int8, uint8]][]uint16{
-				{Left: 1, Right: 2}: {10, 11},
-				{Left: 3, Right: 4}: nil,
+				index.NewKeys[int8, uint8](1, 2): {10, 11},
 			},
 			wantErr: nil,
+		},
+		{
+			name: "successful get empty results",
+			leftGetMulti: func(ctx context.Context, keys []int8) (map[int8][]uint16, error) {
+				result := make(map[int8][]uint16)
+				return result, nil
+			},
+			rightGetMulti: func(ctx context.Context, keys []uint8) (map[uint8][]uint16, error) {
+				result := make(map[uint8][]uint16)
+				return result, nil
+			},
+			keys: []index.Keys[int8, uint8]{
+				index.NewKeys[int8, uint8](1, 2),
+				index.NewKeys[int8, uint8](3, 4),
+			},
+			wantResult: map[index.Keys[int8, uint8]][]uint16{},
+			wantErr:    nil,
 		},
 		{
 			name: "error from left index",
@@ -643,8 +836,8 @@ func TestAndIndex_GetMulti(t *testing.T) {
 				return result, nil
 			},
 			keys: []index.Keys[int8, uint8]{
-				{Left: 1, Right: 2},
-				{Left: 3, Right: 4},
+				index.NewKeys[int8, uint8](1, 2),
+				index.NewKeys[int8, uint8](3, 4),
 			},
 			wantResult: nil,
 			wantErr:    leftErr,
@@ -666,8 +859,8 @@ func TestAndIndex_GetMulti(t *testing.T) {
 				return nil, rightErr
 			},
 			keys: []index.Keys[int8, uint8]{
-				{Left: 1, Right: 2},
-				{Left: 3, Right: 4},
+				index.NewKeys[int8, uint8](1, 2),
+				index.NewKeys[int8, uint8](3, 4),
 			},
 			wantResult: nil,
 			wantErr:    rightErr,

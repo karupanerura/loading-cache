@@ -95,10 +95,15 @@ type SourceLoader[K KeyConstraint, V ValueConstraint] interface {
 // Implementations must be thread-safe.
 type Index[SecondaryKey KeyConstraint, PrimaryKey KeyConstraint] interface {
 	// Get retrieves primary keys by secondary key.
+	// The primary keys are unique.
 	Get(context.Context, SecondaryKey) ([]PrimaryKey, error)
 
 	// GetMulti retrieves primary keys by multiple secondary keys.
+	// The primary keys are unique per secondary key.
 	GetMulti(context.Context, []SecondaryKey) (map[SecondaryKey][]PrimaryKey, error)
+}
+
+type CompositeIndex[LeftSecondaryKey KeyConstraint, RightSecondaryKey KeyConstraint, PrimaryKey KeyConstraint] interface {
 }
 
 // RefreshIndex is an interface for refreshing an index.

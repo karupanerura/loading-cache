@@ -88,10 +88,10 @@ func ExampleOrIndex() {
 
 	// Find products that are either in the "Electronics" category OR in stock
 	ctx := context.Background()
-	entries, err := cache.FindBySecondaryKey(ctx, index.Keys[string, bool]{
-		Left:  "Electronics", // Category
-		Right: true,          // In stock
-	})
+	entries, err := cache.FindBySecondaryKey(ctx, index.NewKeys(
+		"Electronics", // Category
+		true,          // In stock
+	))
 
 	if err != nil {
 		fmt.Println("Error:", err)
@@ -179,10 +179,10 @@ func ExampleAndIndex() {
 
 	// Find products that are either in the "Electronics" category OR in stock
 	ctx := context.Background()
-	entries, err := cache.FindBySecondaryKey(ctx, index.Keys[string, bool]{
-		Left:  "Electronics", // Category
-		Right: true,          // In stock
-	})
+	entries, err := cache.FindBySecondaryKey(ctx, index.NewKeys(
+		"Electronics", // Category
+		true,          // In stock
+	))
 
 	if err != nil {
 		fmt.Println("Error:", err)
