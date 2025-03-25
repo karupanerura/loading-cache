@@ -1,4 +1,4 @@
-package loadingcache_test
+package expiration_test
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"time"
 
 	loadingcache "github.com/karupanerura/loading-cache"
+	"github.com/karupanerura/loading-cache/expiration"
 	"github.com/karupanerura/loading-cache/loader/singleflightloader"
 	"github.com/karupanerura/loading-cache/source"
 	"github.com/karupanerura/loading-cache/storage/memstorage"
@@ -24,12 +25,11 @@ func (u *Book) Clone() *Book {
 	}
 }
 
-func ExampleRandomizedClock() {
+func ExampleEarlyExpirationPolicy() {
 	// Create an in-memory storage
 	storage := memstorage.NewInMemoryStorage[int, *Book](
 		// With a 50% probability, the cache will expire 30 seconds earlier
-		memstorage.WithClock[int, *Book](&loadingcache.RandomizedClock{
-			Clock:      loadingcache.SystemClock,
+		memstorage.WithExpirationPolicy[int, *Book](&expiration.EarlyExpirationPolicy{
 			Duration:   30 * time.Second,
 			Percentage: 0.5,
 		}),
@@ -59,7 +59,7 @@ func ExampleRandomizedClock() {
 
 	// Create the loading cache
 	cache := loadingcache.LoadingCache[int, *Book]{
-		Loader:  singleflightloader.NewSingleFlightLoader(storage, src),
+		Loader:  singleflightloader.NewSingleFlightLoader[int, *Book](storage, src),
 		Storage: storage,
 	}
 

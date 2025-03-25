@@ -79,10 +79,14 @@ func (s *distributedStorage[K, V]) Get(_ context.Context, key K) (*loadingcache.
 	bucket.mu.RLock()
 	defer bucket.mu.RUnlock()
 
-	if v, ok := bucket.m[key]; ok && s.options.clock.Now().Before(v.ExpiresAt) {
+	if v, ok := bucket.m[key]; !ok {
+		return nil, nil
+	} else if s.options.expirationPolicy.IsExpired(s.options.clock.Now(), v.ExpiresAt) {
+		delete(bucket.m, key)
+		return nil, nil
+	} else {
 		return cloneCacheEntry(s.options.cloner, v), nil
 	}
-	return nil, nil
 }
 
 func (s *distributedStorage[K, V]) GetMulti(_ context.Context, keys []K) ([]*loadingcache.CacheEntry[K, V], error) {
@@ -100,8 +104,12 @@ func (s *distributedStorage[K, V]) GetMulti(_ context.Context, keys []K) ([]*loa
 	result := make([]*loadingcache.CacheEntry[K, V], len(keys))
 	for i, key := range keys {
 		bucket := s.buckets[indexes[key]]
-		if v, ok := bucket.m[key]; ok && now.Before(v.ExpiresAt) {
-			result[i] = cloneCacheEntry(s.options.cloner, v)
+		if v, ok := bucket.m[key]; ok {
+			if s.options.expirationPolicy.IsExpired(now, v.ExpiresAt) {
+				delete(bucket.m, key)
+			} else {
+				result[i] = cloneCacheEntry(s.options.cloner, v)
+			}
 		}
 	}
 	return result, nil
@@ -154,10 +162,14 @@ func (s *storage[K, V]) Get(_ context.Context, key K) (*loadingcache.CacheEntry[
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if v, ok := s.m[key]; ok && s.options.clock.Now().Before(v.ExpiresAt) {
+	if v, ok := s.m[key]; !ok {
+		return nil, nil
+	} else if s.options.expirationPolicy.IsExpired(s.options.clock.Now(), v.ExpiresAt) {
+		delete(s.m, key)
+		return nil, nil
+	} else {
 		return cloneCacheEntry(s.options.cloner, v), nil
 	}
-	return nil, nil
 }
 
 func (s *storage[K, V]) GetMulti(_ context.Context, keys []K) ([]*loadingcache.CacheEntry[K, V], error) {
@@ -167,8 +179,12 @@ func (s *storage[K, V]) GetMulti(_ context.Context, keys []K) ([]*loadingcache.C
 	now := s.options.clock.Now()
 	result := make([]*loadingcache.CacheEntry[K, V], len(keys))
 	for i, key := range keys {
-		if v, ok := s.bucket.m[key]; ok && now.Before(v.ExpiresAt) {
-			result[i] = cloneCacheEntry(s.options.cloner, v)
+		if v, ok := s.m[key]; ok {
+			if s.options.expirationPolicy.IsExpired(now, v.ExpiresAt) {
+				delete(s.m, key)
+			} else {
+				result[i] = cloneCacheEntry(s.options.cloner, v)
+			}
 		}
 	}
 	return result, nil

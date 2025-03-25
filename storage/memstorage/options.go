@@ -2,6 +2,7 @@ package memstorage
 
 import (
 	loadingcache "github.com/karupanerura/loading-cache"
+	"github.com/karupanerura/loading-cache/expiration"
 	"github.com/karupanerura/loading-cache/internal/keyhash"
 )
 
@@ -53,18 +54,27 @@ func WithCloner[K loadingcache.KeyConstraint, V loadingcache.ValueConstraint](cl
 	})
 }
 
+// WithExpirationPolicy sets the expiration policy to the storage.
+func WithExpirationPolicy[K loadingcache.KeyConstraint, V loadingcache.ValueConstraint](policy expiration.ExpirationPolicy) Option[K, V] {
+	return optionFunc[K, V](func(o *options[K, V]) {
+		o.expirationPolicy = policy
+	})
+}
+
 type options[K loadingcache.KeyConstraint, V loadingcache.ValueConstraint] struct {
-	hashKey     func(any) int
-	bucketsSize int
-	clock       loadingcache.Clock
-	cloner      loadingcache.ValueCloner[V]
+	hashKey          func(any) int
+	bucketsSize      int
+	clock            loadingcache.Clock
+	cloner           loadingcache.ValueCloner[V]
+	expirationPolicy expiration.ExpirationPolicy
 }
 
 func defaultOptions[K loadingcache.KeyConstraint, V loadingcache.ValueConstraint]() options[K, V] {
 	return options[K, V]{
-		hashKey:     keyhash.GetOrCreateKeyHash[K](),
-		bucketsSize: DefaultBucketsSize,
-		clock:       loadingcache.SystemClock,
-		cloner:      loadingcache.DefaultValueCloner[V](),
+		hashKey:          keyhash.GetOrCreateKeyHash[K](),
+		bucketsSize:      DefaultBucketsSize,
+		clock:            loadingcache.SystemClock,
+		cloner:           loadingcache.DefaultValueCloner[V](),
+		expirationPolicy: expiration.GeneralExpirationPolicy{},
 	}
 }
