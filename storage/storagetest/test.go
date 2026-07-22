@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -317,6 +318,76 @@ type FixedClock struct {
 
 func (c *FixedClock) Now() time.Time {
 	return c.Time
+}
+
+// TestConcurrentExpiration verifies that concurrent readers observing expired entries
+// are safe. Reading an expired entry may mutate internal state (e.g. lazy deletion),
+// so this must be run with the race detector enabled to be effective.
+func TestConcurrentExpiration(t *testing.T, provider func(loadingcache.Clock) (loadingcache.CacheStorage[uint8, int8], func())) {
+	t.Run("ConcurrentExpiration", func(t *testing.T) {
+		t.Parallel()
+
+		base := time.Date(2024, time.March, 16, 0, 0, 0, 0, time.UTC)
+		var offset atomic.Int64
+		clock := loadingcache.ClockFunc(func() time.Time {
+			return base.Add(time.Duration(offset.Load()))
+		})
+
+		storage, release := provider(clock)
+		defer release()
+
+		keys := make([]uint8, 32)
+		for i := range keys {
+			keys[i] = uint8(i)
+		}
+
+		const rounds = 16
+		const readers = 4
+		for range rounds {
+			entries := make([]*loadingcache.CacheEntry[uint8, int8], len(keys))
+			for i, key := range keys {
+				entries[i] = &loadingcache.CacheEntry[uint8, int8]{
+					Entry:     loadingcache.Entry[uint8, int8]{Key: key, Value: int8(i)},
+					ExpiresAt: clock.Now().Add(time.Second),
+				}
+			}
+			if err := storage.SetMulti(t.Context(), entries); err != nil {
+				t.Fatal(err)
+			}
+
+			// expire all entries at once, then read them concurrently
+			offset.Add(int64(2 * time.Second))
+
+			var eg errgroup.Group
+			for range readers {
+				eg.Go(func() error {
+					for _, key := range keys {
+						if entry, err := storage.Get(t.Context(), key); err != nil {
+							return err
+						} else if entry != nil {
+							return fmt.Errorf("unexpected non-expired entry for key %d", key)
+						}
+					}
+					return nil
+				})
+				eg.Go(func() error {
+					entries, err := storage.GetMulti(t.Context(), keys)
+					if err != nil {
+						return err
+					}
+					for i, entry := range entries {
+						if entry != nil {
+							return fmt.Errorf("unexpected non-expired entry for key %d", keys[i])
+						}
+					}
+					return nil
+				})
+			}
+			if err := eg.Wait(); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
 }
 
 func TestExpiration(t *testing.T, provider func(loadingcache.Clock) (loadingcache.CacheStorage[uint8, int8], func())) {
