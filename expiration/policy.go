@@ -2,6 +2,7 @@ package expiration
 
 import (
 	"math/rand/v2"
+	"sync"
 	"time"
 )
 
@@ -55,7 +56,12 @@ type EarlyExpirationPolicy struct {
 	// Random is the random number generator to decide early expiration.
 	// If not set, the default system random generator is used.
 	// This can be set to a specific random generator for deterministic behavior in tests.
+	// It must be set before the policy is used and must not be replaced afterwards.
 	Random *rand.Rand
+
+	// mu guards Random, which is not goroutine-safe by itself.
+	// IsExpired may be called concurrently by cache storages.
+	mu sync.Mutex
 }
 
 var _ ExpirationPolicy = (*EarlyExpirationPolicy)(nil)
@@ -78,5 +84,7 @@ func (p *EarlyExpirationPolicy) randFloat64() float64 {
 	if p.Random == nil {
 		return rand.Float64()
 	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	return p.Random.Float64()
 }
