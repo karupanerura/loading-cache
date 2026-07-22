@@ -77,6 +77,9 @@ func (i *OnMemoryIndex[SecondaryKey, PrimaryKey]) Get(ctx context.Context, sk Se
 	}
 	for i.m == nil {
 		if i.goexit {
+			// release the read lock before exiting; otherwise a subsequent
+			// Refresh would block forever on the leaked read lock
+			i.rl.Unlock()
 			runtime.Goexit()
 		}
 		if err := i.sc.WaitCtx(ctx); err != nil {
@@ -102,6 +105,9 @@ func (i *OnMemoryIndex[SecondaryKey, PrimaryKey]) GetMulti(ctx context.Context, 
 	}
 	for i.m == nil {
 		if i.goexit {
+			// release the read lock before exiting; otherwise a subsequent
+			// Refresh would block forever on the leaked read lock
+			i.rl.Unlock()
 			runtime.Goexit()
 		}
 		if err := i.sc.WaitCtx(ctx); err != nil {
