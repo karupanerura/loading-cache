@@ -128,7 +128,8 @@ func (l *SingleFlightLoader[K, V]) sendEntry(key K, cacheEntry *loadingcache.Cac
 		}
 		close(wl)
 	}
-	l.waitlists[key] = l.waitlists[key][:0]
+	// delete (not truncate) so that the map does not grow with every key ever loaded
+	delete(l.waitlists, key)
 }
 
 // throwError sends an error to the waiting channels.
@@ -139,7 +140,7 @@ func (l *SingleFlightLoader[K, V]) throwError(k K, err error) {
 		wl <- either[error, *loadingcache.Entry[K, V]]{L: err}
 		close(wl)
 	}
-	l.waitlists[k] = l.waitlists[k][:0]
+	delete(l.waitlists, k)
 }
 
 // LoadAndStoreMulti loads multiple entries from the source using the provided keys,
@@ -248,7 +249,7 @@ func (l *SingleFlightLoader[K, V]) sendEntries(keys []K, cacheEntries []*loading
 			}
 			close(wl)
 		}
-		l.waitlists[k] = l.waitlists[k][:0]
+		delete(l.waitlists, k)
 	}
 }
 
@@ -261,6 +262,6 @@ func (l *SingleFlightLoader[K, V]) throwErrors(keys []K, err error) {
 			wl <- either[error, *loadingcache.Entry[K, V]]{L: err}
 			close(wl)
 		}
-		l.waitlists[k] = l.waitlists[k][:0]
+		delete(l.waitlists, k)
 	}
 }
