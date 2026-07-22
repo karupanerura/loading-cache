@@ -190,7 +190,9 @@ var hash64BufferPool = &resettablePool[hash.Hash64]{
 var bytesBufferPool = &resettablePool[*bytes.Buffer]{
 	pool: sync.Pool{
 		New: func() any {
-			return bytes.NewBuffer(make([]byte, 4096))
+			// The buffer must start empty: its content is hashed as-is,
+			// so a fresh buffer and a reused (reset) one must be identical.
+			return bytes.NewBuffer(make([]byte, 0, 4096))
 		},
 	},
 }

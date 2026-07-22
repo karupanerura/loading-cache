@@ -1,7 +1,10 @@
 package keyhash_test
 
 import (
+	"hash/fnv"
 	"reflect"
+	"runtime"
+	"sync"
 	"testing"
 
 	"github.com/karupanerura/loading-cache/internal/keyhash"
@@ -36,7 +39,7 @@ func TestGetOrCreateKeyHash(t *testing.T) {
 			{"uint64", keyhash.GetOrCreateKeyHash[uint64](), uint64(42), 0x81e14877},
 			{"float32", keyhash.GetOrCreateKeyHash[float32](), float32(42.0), 0xb4eab2af},
 			{"float64", keyhash.GetOrCreateKeyHash[float64](), float64(42.0), 0x2887997e},
-			{"string", keyhash.GetOrCreateKeyHash[string](), "test", 0xff97b1e5},
+			{"string", keyhash.GetOrCreateKeyHash[string](), "test", 0xafd071e5},
 		}
 	} else {
 		tests = []testCase{
@@ -52,7 +55,7 @@ func TestGetOrCreateKeyHash(t *testing.T) {
 			{"uint64", keyhash.GetOrCreateKeyHash[uint64](), uint64(42), 0xa8c7de32281a0d97},
 			{"float32", keyhash.GetOrCreateKeyHash[float32](), float32(42.0), 0xe64108a69be87c0f},
 			{"float64", keyhash.GetOrCreateKeyHash[float64](), float64(42.0), 0xe17c3355bfbe5a7e},
-			{"string", keyhash.GetOrCreateKeyHash[string](), "test", 0x3bfeed4cdcc96b25},
+			{"string", keyhash.GetOrCreateKeyHash[string](), "test", 0xf9e6e6ef197c2b25},
 		}
 	}
 
@@ -67,6 +70,48 @@ func TestGetOrCreateKeyHash(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestStringKeyHashConsistency(t *testing.T) {
+	hashFunc := keyhash.GetOrCreateKeyHash[string]()
+
+	const key = "consistency-check"
+	var want int
+	if intSize == 32 {
+		h := fnv.New32a()
+		_, _ = h.Write([]byte(key))
+		want = int(h.Sum32())
+	} else {
+		h := fnv.New64a()
+		_, _ = h.Write([]byte(key))
+		want = int(h.Sum64())
+	}
+
+	// Force sync.Pool to drop pooled buffers so that the next hashing
+	// allocates a fresh buffer. A fresh buffer must produce the same hash
+	// as a reused one.
+	runtime.GC()
+	runtime.GC()
+
+	if got := hashFunc(key); got != want {
+		t.Errorf("hash with a fresh pooled buffer = %#x, want %#x", got, want)
+	}
+
+	// Concurrent hashing allocates additional pool buffers; all of them must agree.
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 1000 {
+				if got := hashFunc(key); got != want {
+					t.Errorf("hash = %#x, want %#x", got, want)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestGetOrCreateKeyHash_ReturnsSameFunctionForSameType(t *testing.T) {
