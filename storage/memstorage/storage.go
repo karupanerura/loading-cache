@@ -4,13 +4,28 @@ import (
 	"context"
 	"sort"
 	"sync"
+	"time"
 
 	loadingcache "github.com/karupanerura/loading-cache"
+	"github.com/karupanerura/loading-cache/expiration"
 )
 
 type bucket[K loadingcache.KeyConstraint, V loadingcache.ValueConstraint] struct {
 	m  map[K]*loadingcache.CacheEntry[K, V]
 	mu sync.RWMutex
+}
+
+// deleteExpired removes the entries for the given keys if they are still expired.
+// It re-checks the expiration under the write lock because an entry may have been
+// replaced by a concurrent Set after it was observed as expired under the read lock.
+func (b *bucket[K, V]) deleteExpired(policy expiration.ExpirationPolicy, now time.Time, keys []K) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, key := range keys {
+		if v, ok := b.m[key]; ok && policy.IsExpired(now, v.ExpiresAt) {
+			delete(b.m, key)
+		}
+	}
 }
 
 type distributedStorage[K loadingcache.KeyConstraint, V loadingcache.ValueConstraint] struct {
@@ -47,13 +62,18 @@ func NewInMemoryStorage[K loadingcache.KeyConstraint, V loadingcache.ValueConstr
 
 var _ loadingcache.CacheStorage[uint8, struct{}] = (*distributedStorage[uint8, struct{}])(nil)
 
-// resolveBucket returns the bucket that corresponds to the given key.
-func (s *distributedStorage[K, V]) resolveBucket(key K) *bucket[K, V] {
+// bucketIndex returns the index of the bucket that corresponds to the given key.
+func (s *distributedStorage[K, V]) bucketIndex(key K) int {
 	index := s.options.hashKey(key) % len(s.buckets)
 	if index < 0 {
-		index *= -1
+		index += len(s.buckets)
 	}
-	return s.buckets[index]
+	return index
+}
+
+// resolveBucket returns the bucket that corresponds to the given key.
+func (s *distributedStorage[K, V]) resolveBucket(key K) *bucket[K, V] {
+	return s.buckets[s.bucketIndex(key)]
 }
 
 // resolveBuckets returns the indexes and buckets that correspond to the given keys.
@@ -61,10 +81,7 @@ func (s *distributedStorage[K, V]) resolveBuckets(keys []K) (indexes map[K]int, 
 	indexes = make(map[K]int, len(keys))
 	seen := make(map[int]struct{}, len(keys))
 	for _, key := range keys {
-		index := s.options.hashKey(key) % len(s.buckets)
-		if index < 0 {
-			index *= -1
-		}
+		index := s.bucketIndex(key)
 		indexes[key] = index
 		if _, ok := seen[index]; !ok {
 			buckets = append(buckets, index)
@@ -76,17 +93,24 @@ func (s *distributedStorage[K, V]) resolveBuckets(keys []K) (indexes map[K]int, 
 
 func (s *distributedStorage[K, V]) Get(_ context.Context, key K) (*loadingcache.CacheEntry[K, V], error) {
 	bucket := s.resolveBucket(key)
-	bucket.mu.RLock()
-	defer bucket.mu.RUnlock()
+	now := s.options.clock.Now()
 
-	if v, ok := bucket.m[key]; !ok {
-		return nil, nil
-	} else if s.options.expirationPolicy.IsExpired(s.options.clock.Now(), v.ExpiresAt) {
-		delete(bucket.m, key)
-		return nil, nil
-	} else {
-		return cloneCacheEntry(s.options.cloner, v), nil
+	bucket.mu.RLock()
+	var entry *loadingcache.CacheEntry[K, V]
+	expired := false
+	if v, ok := bucket.m[key]; ok {
+		if s.options.expirationPolicy.IsExpired(now, v.ExpiresAt) {
+			expired = true
+		} else {
+			entry = cloneCacheEntry(s.options.cloner, v)
+		}
 	}
+	bucket.mu.RUnlock()
+
+	if expired {
+		bucket.deleteExpired(s.options.expirationPolicy, now, []K{key})
+	}
+	return entry, nil
 }
 
 func (s *distributedStorage[K, V]) GetMulti(_ context.Context, keys []K) ([]*loadingcache.CacheEntry[K, V], error) {
@@ -95,21 +119,35 @@ func (s *distributedStorage[K, V]) GetMulti(_ context.Context, keys []K) ([]*loa
 		sort.Ints(buckets)
 	}
 	for _, i := range buckets {
-		bucket := s.buckets[i]
-		bucket.mu.RLock()
-		defer bucket.mu.RUnlock()
+		s.buckets[i].mu.RLock()
 	}
 
 	now := s.options.clock.Now()
 	result := make([]*loadingcache.CacheEntry[K, V], len(keys))
+	var expiredKeys []K
 	for i, key := range keys {
 		bucket := s.buckets[indexes[key]]
 		if v, ok := bucket.m[key]; ok {
 			if s.options.expirationPolicy.IsExpired(now, v.ExpiresAt) {
-				delete(bucket.m, key)
+				expiredKeys = append(expiredKeys, key)
 			} else {
 				result[i] = cloneCacheEntry(s.options.cloner, v)
 			}
+		}
+	}
+
+	for i := len(buckets) - 1; i >= 0; i-- {
+		s.buckets[buckets[i]].mu.RUnlock()
+	}
+
+	if len(expiredKeys) != 0 {
+		expiredKeysByBucket := make(map[int][]K)
+		for _, key := range expiredKeys {
+			index := indexes[key]
+			expiredKeysByBucket[index] = append(expiredKeysByBucket[index], key)
+		}
+		for index, bucketKeys := range expiredKeysByBucket {
+			s.buckets[index].deleteExpired(s.options.expirationPolicy, now, bucketKeys)
 		}
 	}
 	return result, nil
@@ -159,33 +197,45 @@ type storage[K loadingcache.KeyConstraint, V loadingcache.ValueConstraint] struc
 var _ loadingcache.CacheStorage[uint8, struct{}] = (*storage[uint8, struct{}])(nil)
 
 func (s *storage[K, V]) Get(_ context.Context, key K) (*loadingcache.CacheEntry[K, V], error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	now := s.options.clock.Now()
 
-	if v, ok := s.m[key]; !ok {
-		return nil, nil
-	} else if s.options.expirationPolicy.IsExpired(s.options.clock.Now(), v.ExpiresAt) {
-		delete(s.m, key)
-		return nil, nil
-	} else {
-		return cloneCacheEntry(s.options.cloner, v), nil
+	s.mu.RLock()
+	var entry *loadingcache.CacheEntry[K, V]
+	expired := false
+	if v, ok := s.m[key]; ok {
+		if s.options.expirationPolicy.IsExpired(now, v.ExpiresAt) {
+			expired = true
+		} else {
+			entry = cloneCacheEntry(s.options.cloner, v)
+		}
 	}
+	s.mu.RUnlock()
+
+	if expired {
+		s.bucket.deleteExpired(s.options.expirationPolicy, now, []K{key})
+	}
+	return entry, nil
 }
 
 func (s *storage[K, V]) GetMulti(_ context.Context, keys []K) ([]*loadingcache.CacheEntry[K, V], error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	now := s.options.clock.Now()
+
+	s.mu.RLock()
 	result := make([]*loadingcache.CacheEntry[K, V], len(keys))
+	var expiredKeys []K
 	for i, key := range keys {
 		if v, ok := s.m[key]; ok {
 			if s.options.expirationPolicy.IsExpired(now, v.ExpiresAt) {
-				delete(s.m, key)
+				expiredKeys = append(expiredKeys, key)
 			} else {
 				result[i] = cloneCacheEntry(s.options.cloner, v)
 			}
 		}
+	}
+	s.mu.RUnlock()
+
+	if len(expiredKeys) != 0 {
+		s.bucket.deleteExpired(s.options.expirationPolicy, now, expiredKeys)
 	}
 	return result, nil
 }

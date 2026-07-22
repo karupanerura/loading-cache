@@ -2,6 +2,7 @@ package expiration_test
 
 import (
 	"math/rand/v2"
+	"sync"
 	"testing"
 	"time"
 
@@ -176,4 +177,34 @@ func TestEarlyExpirationPolicy(t *testing.T) {
 			t.Error("With zero early duration, should behave like general policy")
 		}
 	})
+}
+
+// TestEarlyExpirationPolicy_ConcurrentIsExpired verifies that a policy with a
+// user-provided random generator is safe to use from multiple goroutines.
+// Cache storages call IsExpired concurrently, but *rand.Rand is not
+// goroutine-safe by itself, so the policy must synchronize access to it.
+// This test is effective when run with the race detector enabled.
+func TestEarlyExpirationPolicy_ConcurrentIsExpired(t *testing.T) {
+	t.Parallel()
+
+	policy := &expiration.EarlyExpirationPolicy{
+		Duration:   30 * time.Second,
+		Percentage: 0.5,
+		Random:     rand.New(rand.NewPCG(1, 2)),
+	}
+
+	now := time.Date(2023, 1, 1, 12, 0, 0, 0, time.UTC)
+	expiresAt := now.Add(time.Minute)
+
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 1000 {
+				policy.IsExpired(now, expiresAt)
+			}
+		}()
+	}
+	wg.Wait()
 }

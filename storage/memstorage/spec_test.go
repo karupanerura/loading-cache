@@ -143,6 +143,24 @@ func TestExpiration(t *testing.T) {
 	})
 }
 
+func TestConcurrentExpiration(t *testing.T) {
+	t.Parallel()
+	t.Run("SingleBucket", func(t *testing.T) {
+		t.Parallel()
+
+		storagetest.TestConcurrentExpiration(t, func(clock loadingcache.Clock) (loadingcache.CacheStorage[uint8, int8], func()) {
+			return memstorage.NewInMemoryStorage(memstorage.WithBucketsSize[uint8, int8](1), memstorage.WithClock[uint8, int8](clock)), func() {}
+		})
+	})
+	t.Run("MultipleBucket", func(t *testing.T) {
+		t.Parallel()
+
+		storagetest.TestConcurrentExpiration(t, func(clock loadingcache.Clock) (loadingcache.CacheStorage[uint8, int8], func()) {
+			return memstorage.NewInMemoryStorage(memstorage.WithBucketsSize[uint8, int8](8), memstorage.WithClock[uint8, int8](clock)), func() {}
+		})
+	})
+}
+
 func TestNegativeCache(t *testing.T) {
 	t.Parallel()
 	t.Run("SingleBucket", func(t *testing.T) {
