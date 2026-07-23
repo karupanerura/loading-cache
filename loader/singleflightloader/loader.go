@@ -92,20 +92,21 @@ func (l *SingleFlightLoader[K, V]) loadKeyAndStore(ctx context.Context, key K) {
 		},
 	}
 
+	// storage.Set must also run inside the double defer sandwich: if it calls
+	// runtime.Goexit (e.g. t.Fatal in a test storage), the waiters must be
+	// notified. Otherwise the waitlist entry would survive forever and every
+	// future call for the same key would join it without starting a new load.
 	var cacheEntry *loadingcache.CacheEntry[K, V]
 	if err := dds.Invoke(func() (err error) {
 		cacheEntry, err = l.source.Get(ctx, key)
+		if err != nil || cacheEntry == nil {
+			return
+		}
+		err = l.storage.Set(ctx, cacheEntry)
 		return
 	}); err != nil {
 		l.throwError(key, err)
 		return
-	}
-
-	if cacheEntry != nil {
-		if err := l.storage.Set(ctx, cacheEntry); err != nil {
-			l.throwError(key, err)
-			return
-		}
 	}
 	l.sendEntry(key, cacheEntry)
 }
@@ -212,16 +213,20 @@ func (l *SingleFlightLoader[K, V]) loadKeysAndStore(ctx context.Context, keys []
 		},
 	}
 
+	// storage.SetMulti must also run inside the double defer sandwich: if it
+	// calls runtime.Goexit (e.g. t.Fatal in a test storage), the waiters must
+	// be notified. Otherwise the waitlist entries would survive forever and
+	// every future call for the same keys would join them without starting a
+	// new load.
 	var entries []*loadingcache.CacheEntry[K, V]
 	if err := dds.Invoke(func() (err error) {
 		entries, err = l.source.GetMulti(ctx, keys)
+		if err != nil {
+			return
+		}
+		err = l.storage.SetMulti(ctx, entries)
 		return
 	}); err != nil {
-		l.throwErrors(keys, err)
-		return
-	}
-
-	if err := l.storage.SetMulti(ctx, entries); err != nil {
 		l.throwErrors(keys, err)
 		return
 	}
