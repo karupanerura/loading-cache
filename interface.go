@@ -68,6 +68,10 @@ type CacheStorage[K KeyConstraint, V ValueConstraint] interface {
 }
 
 // LoadingSource is an interface for loading data from an external source.
+//
+// The returned entries are owned by the caller: implementations must not
+// retain and mutate them (including the values inside) after returning,
+// otherwise the mutation would race with cache internals reading them.
 type LoadingSource[K KeyConstraint, V ValueConstraint] interface {
 	// Get retrieves a value by its key.
 	// It returns the value wrapped in a CacheEntry, along with its expiration time and an error, if any.
@@ -117,5 +121,8 @@ type RefreshIndex interface {
 // IndexSource is an interface for indexing data sources.
 type IndexSource[SecondaryKey KeyConstraint, PrimaryKey KeyConstraint] interface {
 	// GetAll retrieves all secondary keys and their corresponding primary keys.
+	// The returned map (including its slices) is owned by the caller:
+	// implementations must return a fresh map and must not retain and mutate
+	// it after returning, otherwise the mutation would race with index reads.
 	GetAll(context.Context) (map[SecondaryKey][]PrimaryKey, error)
 }

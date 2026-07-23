@@ -92,20 +92,21 @@ func (l *SingleFlightLoader[K, V]) loadKeyAndStore(ctx context.Context, key K) {
 		},
 	}
 
+	// storage.Set must also run inside the double defer sandwich: if it calls
+	// runtime.Goexit (e.g. t.Fatal in a test storage), the waiters must be
+	// notified. Otherwise the waitlist entry would survive forever and every
+	// future call for the same key would join it without starting a new load.
 	var cacheEntry *loadingcache.CacheEntry[K, V]
 	if err := dds.Invoke(func() (err error) {
 		cacheEntry, err = l.source.Get(ctx, key)
+		if err != nil || cacheEntry == nil {
+			return
+		}
+		err = l.storage.Set(ctx, cacheEntry)
 		return
 	}); err != nil {
 		l.throwError(key, err)
 		return
-	}
-
-	if cacheEntry != nil {
-		if err := l.storage.Set(ctx, cacheEntry); err != nil {
-			l.throwError(key, err)
-			return
-		}
 	}
 	l.sendEntry(key, cacheEntry)
 }
@@ -114,14 +115,19 @@ func (l *SingleFlightLoader[K, V]) loadKeyAndStore(ctx context.Context, key K) {
 func (l *SingleFlightLoader[K, V]) sendEntry(key K, cacheEntry *loadingcache.CacheEntry[K, V]) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	for i, wl := range l.waitlists[key] {
+	waitlist := l.waitlists[key]
+	for i, wl := range waitlist {
 		if cacheEntry == nil || cacheEntry.NegativeCache {
 			wl <- either[error, *loadingcache.Entry[K, V]]{R: nil}
 		} else {
 			entry := cacheEntry.Entry
-			if i != 0 {
-				// note: we clone the value only if it is not the first receiver
+			if i != len(waitlist)-1 {
+				// note: we clone the value for each receiver except the last one
 				// to avoid unnecessary cloning when there are multiple receivers.
+				// Only the last receiver may take the original value: an earlier
+				// receiver starts using (and possibly mutating) its entry as soon
+				// as it is sent, while the original value is still being read here
+				// to produce the clones for the remaining receivers.
 				entry.Value = l.cloner.CloneValue(entry.Value)
 			}
 			wl <- either[error, *loadingcache.Entry[K, V]]{R: &entry}
@@ -212,16 +218,20 @@ func (l *SingleFlightLoader[K, V]) loadKeysAndStore(ctx context.Context, keys []
 		},
 	}
 
+	// storage.SetMulti must also run inside the double defer sandwich: if it
+	// calls runtime.Goexit (e.g. t.Fatal in a test storage), the waiters must
+	// be notified. Otherwise the waitlist entries would survive forever and
+	// every future call for the same keys would join them without starting a
+	// new load.
 	var entries []*loadingcache.CacheEntry[K, V]
 	if err := dds.Invoke(func() (err error) {
 		entries, err = l.source.GetMulti(ctx, keys)
+		if err != nil {
+			return
+		}
+		err = l.storage.SetMulti(ctx, entries)
 		return
 	}); err != nil {
-		l.throwErrors(keys, err)
-		return
-	}
-
-	if err := l.storage.SetMulti(ctx, entries); err != nil {
 		l.throwErrors(keys, err)
 		return
 	}
@@ -235,14 +245,19 @@ func (l *SingleFlightLoader[K, V]) sendEntries(keys []K, cacheEntries []*loading
 	defer l.mu.Unlock()
 	for i, k := range keys {
 		cacheEntry := cacheEntries[i]
-		for j, wl := range l.waitlists[k] {
+		waitlist := l.waitlists[k]
+		for j, wl := range waitlist {
 			if cacheEntry == nil || cacheEntry.NegativeCache {
 				wl <- either[error, *loadingcache.Entry[K, V]]{R: nil}
 			} else {
 				entry := cacheEntry.Entry
-				if j != 0 {
-					// note: we clone the value only if it is not the first receiver
+				if j != len(waitlist)-1 {
+					// note: we clone the value for each receiver except the last one
 					// to avoid unnecessary cloning when there are multiple receivers.
+					// Only the last receiver may take the original value: an earlier
+					// receiver starts using (and possibly mutating) its entry as soon
+					// as it is sent, while the original value is still being read here
+					// to produce the clones for the remaining receivers.
 					entry.Value = l.cloner.CloneValue(entry.Value)
 				}
 				wl <- either[error, *loadingcache.Entry[K, V]]{R: &entry}
