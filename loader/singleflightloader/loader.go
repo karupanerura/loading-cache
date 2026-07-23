@@ -115,14 +115,19 @@ func (l *SingleFlightLoader[K, V]) loadKeyAndStore(ctx context.Context, key K) {
 func (l *SingleFlightLoader[K, V]) sendEntry(key K, cacheEntry *loadingcache.CacheEntry[K, V]) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	for i, wl := range l.waitlists[key] {
+	waitlist := l.waitlists[key]
+	for i, wl := range waitlist {
 		if cacheEntry == nil || cacheEntry.NegativeCache {
 			wl <- either[error, *loadingcache.Entry[K, V]]{R: nil}
 		} else {
 			entry := cacheEntry.Entry
-			if i != 0 {
-				// note: we clone the value only if it is not the first receiver
+			if i != len(waitlist)-1 {
+				// note: we clone the value for each receiver except the last one
 				// to avoid unnecessary cloning when there are multiple receivers.
+				// Only the last receiver may take the original value: an earlier
+				// receiver starts using (and possibly mutating) its entry as soon
+				// as it is sent, while the original value is still being read here
+				// to produce the clones for the remaining receivers.
 				entry.Value = l.cloner.CloneValue(entry.Value)
 			}
 			wl <- either[error, *loadingcache.Entry[K, V]]{R: &entry}
@@ -240,14 +245,19 @@ func (l *SingleFlightLoader[K, V]) sendEntries(keys []K, cacheEntries []*loading
 	defer l.mu.Unlock()
 	for i, k := range keys {
 		cacheEntry := cacheEntries[i]
-		for j, wl := range l.waitlists[k] {
+		waitlist := l.waitlists[k]
+		for j, wl := range waitlist {
 			if cacheEntry == nil || cacheEntry.NegativeCache {
 				wl <- either[error, *loadingcache.Entry[K, V]]{R: nil}
 			} else {
 				entry := cacheEntry.Entry
-				if j != 0 {
-					// note: we clone the value only if it is not the first receiver
+				if j != len(waitlist)-1 {
+					// note: we clone the value for each receiver except the last one
 					// to avoid unnecessary cloning when there are multiple receivers.
+					// Only the last receiver may take the original value: an earlier
+					// receiver starts using (and possibly mutating) its entry as soon
+					// as it is sent, while the original value is still being read here
+					// to produce the clones for the remaining receivers.
 					entry.Value = l.cloner.CloneValue(entry.Value)
 				}
 				wl <- either[error, *loadingcache.Entry[K, V]]{R: &entry}
