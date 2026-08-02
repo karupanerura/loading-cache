@@ -104,7 +104,7 @@ func TestOnMemoryIndex_Get(t *testing.T) {
 func TestOnMemoryIndex_Get_Concurrency(t *testing.T) {
 	t.Parallel()
 
-	t.Run("WaitForUpdateIndex", func(t *testing.T) {
+	t.Run("LazyInitialization", func(t *testing.T) {
 		t.Parallel()
 
 		// Create mock source
@@ -117,17 +117,9 @@ func TestOnMemoryIndex_Get_Concurrency(t *testing.T) {
 			},
 		)
 
-		// Create and initialize index
+		// Create the index without refreshing it: the first Get triggers the
+		// initial load by itself.
 		idx := omcindex.NewOnMemoryIndex[uint8, uint8](source)
-
-		// Update index in background
-		go func() {
-			time.Sleep(100 * time.Millisecond)
-			if err := idx.Refresh(t.Context()); err != nil {
-				t.Errorf("failed to initialize index: %v", err)
-				return
-			}
-		}()
 
 		// Test Get method
 		result, err := idx.Get(t.Context(), 1)
@@ -140,12 +132,14 @@ func TestOnMemoryIndex_Get_Concurrency(t *testing.T) {
 		}
 	})
 
-	t.Run("TimeoutToWaitRefresh", func(t *testing.T) {
+	t.Run("TimeoutWhileInitializing", func(t *testing.T) {
 		t.Parallel()
 
-		// Create mock source
+		// Create mock source blocked until released
+		release := make(chan struct{})
 		source := index.FunctionIndexSource[uint8, uint8](
 			func(ctx context.Context) (map[uint8][]uint8, error) {
+				<-release
 				return map[uint8][]uint8{
 					1: {10, 11},
 					2: {20, 21},
@@ -153,24 +147,27 @@ func TestOnMemoryIndex_Get_Concurrency(t *testing.T) {
 			},
 		)
 
-		// Create and initialize index
+		// Create the index without refreshing it
 		idx := omcindex.NewOnMemoryIndex[uint8, uint8](source)
 
-		// Update index in background
-		go func() {
-			time.Sleep(1 * time.Second)
-			if err := idx.Refresh(t.Context()); err != nil {
-				t.Errorf("failed to initialize index: %v", err)
-				return
-			}
-		}()
-
-		// Test Get method
+		// A Get canceled while the initial load is still running must return
+		// the context error instead of hanging.
 		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 		defer cancel()
 		_, err := idx.Get(ctx, 1)
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Errorf("unexpected error: %v (expected: context deadline exceeded)", err)
+		}
+
+		// The shared initial load keeps running: once it finishes, the index
+		// must serve the loaded data.
+		close(release)
+		result, err := idx.Get(t.Context(), 1)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if diff := cmp.Diff([]uint8{10, 11}, result); diff != "" {
+			t.Errorf("unexpected result (-want +got):\n%s", diff)
 		}
 	})
 }
@@ -248,7 +245,7 @@ func TestOnMemoryIndex_GetMulti(t *testing.T) {
 func TestOnMemoryInde_GetMulti_Concurrency(t *testing.T) {
 	t.Parallel()
 
-	t.Run("WaitForUpdateIndex", func(t *testing.T) {
+	t.Run("LazyInitialization", func(t *testing.T) {
 		t.Parallel()
 
 		// Create mock source
@@ -262,17 +259,9 @@ func TestOnMemoryInde_GetMulti_Concurrency(t *testing.T) {
 			},
 		)
 
-		// Create and initialize index
+		// Create the index without refreshing it: the first GetMulti triggers
+		// the initial load by itself.
 		idx := omcindex.NewOnMemoryIndex[uint8, uint8](source)
-
-		// Update index in background
-		go func() {
-			time.Sleep(100 * time.Millisecond)
-			if err := idx.Refresh(t.Context()); err != nil {
-				t.Errorf("failed to initialize index: %v", err)
-				return
-			}
-		}()
 
 		// Test GetMulti method
 		results, err := idx.GetMulti(t.Context(), []uint8{1, 3, 4})
@@ -285,12 +274,14 @@ func TestOnMemoryInde_GetMulti_Concurrency(t *testing.T) {
 		}
 	})
 
-	t.Run("TimeoutToWaitRefresh", func(t *testing.T) {
+	t.Run("TimeoutWhileInitializing", func(t *testing.T) {
 		t.Parallel()
 
-		// Create mock source
+		// Create mock source blocked until released
+		release := make(chan struct{})
 		source := index.FunctionIndexSource[uint8, uint8](
 			func(ctx context.Context) (map[uint8][]uint8, error) {
+				<-release
 				return map[uint8][]uint8{
 					1: {10, 11},
 					2: {20, 21},
@@ -298,24 +289,27 @@ func TestOnMemoryInde_GetMulti_Concurrency(t *testing.T) {
 			},
 		)
 
-		// Create and initialize index
+		// Create the index without refreshing it
 		idx := omcindex.NewOnMemoryIndex[uint8, uint8](source)
 
-		// Update index in background
-		go func() {
-			time.Sleep(1 * time.Second)
-			if err := idx.Refresh(t.Context()); err != nil {
-				t.Errorf("failed to initialize index: %v", err)
-				return
-			}
-		}()
-
-		// Test Get method
+		// A GetMulti canceled while the initial load is still running must
+		// return the context error instead of hanging.
 		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 		defer cancel()
 		_, err := idx.GetMulti(ctx, []uint8{1, 3, 4})
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Errorf("unexpected error: %v (expected: context deadline exceeded)", err)
+		}
+
+		// The shared initial load keeps running: once it finishes, the index
+		// must serve the loaded data.
+		close(release)
+		results, err := idx.GetMulti(t.Context(), []uint8{1, 3, 4})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if diff := cmp.Diff(map[uint8][]uint8{1: {10, 11}}, results); diff != "" {
+			t.Errorf("unexpected result (-want +got):\n%s", diff)
 		}
 	})
 }

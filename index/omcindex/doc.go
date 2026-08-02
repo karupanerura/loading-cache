@@ -1,6 +1,6 @@
 // Package omcindex provides an in-memory implementation of the index interface
 // for the loading-cache library. It maps secondary keys to primary keys and
-// supports concurrent reads with atomic updates.
+// supports concurrent lock-free reads with atomic updates.
 //
 // Basic Usage:
 //
@@ -14,7 +14,8 @@
 //	    },
 //	)
 //
-//	// Create and initialize index
+//	// Create the index. It initializes itself lazily on the first read;
+//	// calling Refresh here is optional and initializes it eagerly instead.
 //	idx := omcindex.NewOnMemoryIndex[string, int](source)
 //	err := idx.Refresh(ctx)
 //	if err != nil {
@@ -44,10 +45,12 @@
 //
 // OnMemoryIndex Features:
 //
-// - Thread-safe for concurrent reads
+// - Thread-safe, lock-free reads from an immutable snapshot
 // - Atomic index updates via Refresh()
-// - First reads block until index is initialized
-// - All operations respect context cancellation
+// - Lazy initialization: the first reads trigger a single shared load from
+//   the source and wait for it (the wait respects context cancellation);
+//   a failed load is reported to the waiting readers and retried by later
+//   reads
 // - Copies returned data to prevent mutation
 //
 // The implementation is optimized for read-heavy workloads where updates

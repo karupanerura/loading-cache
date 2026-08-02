@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand/v2"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,7 +29,9 @@ func TestStress_ConcurrentRefreshAndGet(t *testing.T) {
 		numRefreshes     = 30
 	)
 
+	var getAllCalls atomic.Int32
 	buildIndex := func(context.Context) (map[uint8][]uint8, error) {
+		getAllCalls.Add(1)
 		time.Sleep(200 * time.Microsecond) // widen the refresh window
 		m := make(map[uint8][]uint8, numSecondaryKeys)
 		for sk := uint8(0); sk < numSecondaryKeys; sk++ {
@@ -37,37 +40,6 @@ func TestStress_ConcurrentRefreshAndGet(t *testing.T) {
 		return m, nil
 	}
 	idx := omcindex.NewOnMemoryIndex[uint8, uint8](index.FunctionIndexSource[uint8, uint8](buildIndex))
-
-	// Getters canceled before the first refresh must return the context error
-	// instead of hanging, and must not leak the read lock.
-	var eg errgroup.Group
-	for i := 0; i < 4; i++ {
-		eg.Go(func() error {
-			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
-			defer cancel()
-			if _, err := idx.Get(ctx, 1); err != context.DeadlineExceeded {
-				return fmt.Errorf("expected context.DeadlineExceeded before the first refresh, got %v", err)
-			}
-			return nil
-		})
-	}
-	if err := eg.Wait(); err != nil {
-		t.Fatal(err)
-	}
-
-	// A refresh after the canceled getters must not deadlock on a leaked read lock.
-	refreshDone := make(chan error, 1)
-	go func() {
-		refreshDone <- idx.Refresh(t.Context())
-	}()
-	select {
-	case err := <-refreshDone:
-		if err != nil {
-			t.Fatalf("unexpected refresh error: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Refresh deadlocked: a canceled getter leaked the read lock")
-	}
 
 	verify := func(sk uint8, pks []uint8) error {
 		if sk < numSecondaryKeys {
@@ -82,6 +54,25 @@ func TestStress_ConcurrentRefreshAndGet(t *testing.T) {
 			return fmt.Errorf("unexpected primary keys for unknown key %d: %v", sk, pks)
 		}
 		return nil
+	}
+
+	// Concurrent first reads must share exactly one lazy initial load, and
+	// every one of them must succeed with the loaded data.
+	var eg errgroup.Group
+	for i := 0; i < 4; i++ {
+		eg.Go(func() error {
+			pks, err := idx.Get(t.Context(), 1)
+			if err != nil {
+				return err
+			}
+			return verify(1, pks)
+		})
+	}
+	if err := eg.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if got := getAllCalls.Load(); got != 1 {
+		t.Fatalf("expected concurrent first reads to share exactly one initial load, got %d loads", got)
 	}
 
 	eg = errgroup.Group{}
@@ -126,12 +117,13 @@ func TestStress_ConcurrentRefreshAndGet(t *testing.T) {
 					}
 				}
 
-				// Exercise the canceled-waiter path from time to time.
+				// A canceled context must not disturb reads: an initialized
+				// index serves reads without blocking, so it still yields a
+				// consistent result.
 				if i%32 == 31 {
 					ctx, cancel := context.WithCancel(t.Context())
 					cancel()
 					if pks, err := idx.Get(ctx, sk); err == nil {
-						// The lock may have been acquired before the cancellation was observed.
 						if err := verify(sk, pks); err != nil {
 							return err
 						}
