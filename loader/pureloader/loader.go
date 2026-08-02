@@ -2,6 +2,7 @@ package pureloader
 
 import (
 	"context"
+	"fmt"
 
 	loadingcache "github.com/karupanerura/loading-cache"
 )
@@ -51,6 +52,12 @@ func (p *PureLoader[K, V]) LoadAndStoreMulti(ctx context.Context, keys []K) ([]*
 	cacheEntries, err := p.source.GetMulti(ctx, keys)
 	if err != nil {
 		return nil, err
+	}
+	// A mismatched length would otherwise surface far from its cause, as an
+	// index-out-of-range in LoadingCache.GetOrLoadMulti reading the returned
+	// slice. Turn the contract violation into an error instead.
+	if len(cacheEntries) != len(keys) {
+		return nil, fmt.Errorf("loadingcache: LoadingSource.GetMulti returned %d entries for %d keys; it must return exactly one entry per key in the same order as the keys (wrap the source with source.LintSource to catch this during development, or with source.CompactSource to adapt sources that omit missing keys)", len(cacheEntries), len(keys))
 	}
 
 	if err := p.storage.SetMulti(ctx, cacheEntries); err != nil {

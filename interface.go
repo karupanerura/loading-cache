@@ -92,6 +92,10 @@ type SourceLoader[K KeyConstraint, V ValueConstraint] interface {
 	LoadAndStore(context.Context, K) (*Entry[K, V], error)
 
 	// LoadAndStoreMulti loads multiple values by keys from the external source and stores them in the cache storage.
+	// The returned slice must contain exactly one element per input key, in
+	// the same order as the keys; the element must be nil for keys that were
+	// not found or are negatively cached. Callers rely on this positional
+	// correspondence to map the results back to their keys.
 	LoadAndStoreMulti(context.Context, []K) ([]*Entry[K, V], error)
 }
 

@@ -28,6 +28,11 @@ func WithCloner[K loadingcache.KeyConstraint, V loadingcache.ValueConstraint](cl
 // WithBackgroundContextProvider sets the context provider to the loader.
 // The provider must return a new context for each call.
 // The default context provider is context.Background.
+//
+// A loading goroutine runs with the provided context and keeps running until
+// the source and the storage return, even after every waiter has given up
+// (canceled its own context). A hanging source can therefore only be bounded
+// by returning a context with a deadline from this provider.
 func WithBackgroundContextProvider[K loadingcache.KeyConstraint, V loadingcache.ValueConstraint](provider func() context.Context) Option[K, V] {
 	return optionFunc[K, V](func(l *SingleFlightLoader[K, V]) {
 		l.context = provider

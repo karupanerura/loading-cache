@@ -3,6 +3,7 @@ package singleflightloader
 import (
 	"context"
 	"errors"
+	"fmt"
 	"runtime"
 	"sync"
 
@@ -240,6 +241,13 @@ func (l *SingleFlightLoader[K, V]) loadKeysAndStore(ctx context.Context, keys []
 		entries, err = l.source.GetMulti(ctx, keys)
 		if err != nil {
 			return
+		}
+		// A mismatched length would otherwise panic as an index-out-of-range
+		// in sendEntries below, on this background goroutine where nothing
+		// can recover it: the process would crash and the waiters would never
+		// be notified. Turn the contract violation into an error instead.
+		if len(entries) != len(keys) {
+			return fmt.Errorf("loadingcache: LoadingSource.GetMulti returned %d entries for %d keys; it must return exactly one entry per key in the same order as the keys (wrap the source with source.LintSource to catch this during development, or with source.CompactSource to adapt sources that omit missing keys)", len(entries), len(keys))
 		}
 		err = l.storage.SetMulti(ctx, entries)
 		return
