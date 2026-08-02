@@ -79,7 +79,9 @@ func (l *SingleFlightLoader[K, V]) registerKey(ctx context.Context, key K) chan 
 	ch := make(chan either[error, *loadingcache.Entry[K, V]], 1)
 	l.waitlists[key] = append(l.waitlists[key], ch)
 	if len(l.waitlists[key]) == 1 {
-		go l.loadKeyAndStore(l.context(), key)
+		// l.context() is a user-provided function: call it in the loading
+		// goroutine, outside the mutex.
+		go func() { l.loadKeyAndStore(l.context(), key) }()
 	}
 	return ch
 }
@@ -111,11 +113,19 @@ func (l *SingleFlightLoader[K, V]) loadKeyAndStore(ctx context.Context, key K) {
 	l.sendEntry(key, cacheEntry)
 }
 
-// throwError sends an error to the waiting channels.
+// sendEntry sends the entry to the waiting channels.
 func (l *SingleFlightLoader[K, V]) sendEntry(key K, cacheEntry *loadingcache.CacheEntry[K, V]) {
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	waitlist := l.waitlists[key]
+	// delete (not truncate) so that the map does not grow with every key ever loaded
+	delete(l.waitlists, key)
+	l.mu.Unlock()
+
+	// The waitlist is detached from the map above, so no other goroutine can
+	// reach it anymore: cloning and distribution run outside the mutex. This
+	// keeps a slow user-provided cloner from serializing loads of unrelated
+	// keys, and keeps a cloner that reaches back into this loader from
+	// deadlocking on the mutex.
 	for i, wl := range waitlist {
 		if cacheEntry == nil || cacheEntry.NegativeCache {
 			wl <- either[error, *loadingcache.Entry[K, V]]{R: nil}
@@ -134,19 +144,19 @@ func (l *SingleFlightLoader[K, V]) sendEntry(key K, cacheEntry *loadingcache.Cac
 		}
 		close(wl)
 	}
-	// delete (not truncate) so that the map does not grow with every key ever loaded
-	delete(l.waitlists, key)
 }
 
 // throwError sends an error to the waiting channels.
 func (l *SingleFlightLoader[K, V]) throwError(k K, err error) {
 	l.mu.Lock()
-	defer l.mu.Unlock()
-	for _, wl := range l.waitlists[k] {
+	waitlist := l.waitlists[k]
+	delete(l.waitlists, k)
+	l.mu.Unlock()
+
+	for _, wl := range waitlist {
 		wl <- either[error, *loadingcache.Entry[K, V]]{L: err}
 		close(wl)
 	}
-	delete(l.waitlists, k)
 }
 
 // LoadAndStoreMulti loads multiple entries from the source using the provided keys,
@@ -205,7 +215,9 @@ func (l *SingleFlightLoader[K, V]) registerKeys(ctx context.Context, keys []K) [
 		channels[i] = ch
 	}
 	if len(targetKeys) != 0 {
-		go l.loadKeysAndStore(l.context(), targetKeys)
+		// l.context() is a user-provided function: call it in the loading
+		// goroutine, outside the mutex.
+		go func() { l.loadKeysAndStore(l.context(), targetKeys) }()
 	}
 	return channels
 }
@@ -241,11 +253,12 @@ func (l *SingleFlightLoader[K, V]) loadKeysAndStore(ctx context.Context, keys []
 
 // sendEntries sends the entries to the waiting channels.
 func (l *SingleFlightLoader[K, V]) sendEntries(keys []K, cacheEntries []*loadingcache.CacheEntry[K, V]) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	for i, k := range keys {
+	waitlists := l.detachWaitlists(keys)
+
+	// The waitlists are detached from the map above: cloning and distribution
+	// run outside the mutex for the same reasons as in sendEntry.
+	for i, waitlist := range waitlists {
 		cacheEntry := cacheEntries[i]
-		waitlist := l.waitlists[k]
 		for j, wl := range waitlist {
 			if cacheEntry == nil || cacheEntry.NegativeCache {
 				wl <- either[error, *loadingcache.Entry[K, V]]{R: nil}
@@ -264,19 +277,31 @@ func (l *SingleFlightLoader[K, V]) sendEntries(keys []K, cacheEntries []*loading
 			}
 			close(wl)
 		}
-		delete(l.waitlists, k)
 	}
 }
 
 // throwErrors sends an error to the waiting channels.
 func (l *SingleFlightLoader[K, V]) throwErrors(keys []K, err error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	for _, k := range keys {
-		for _, wl := range l.waitlists[k] {
+	waitlists := l.detachWaitlists(keys)
+
+	for _, waitlist := range waitlists {
+		for _, wl := range waitlist {
 			wl <- either[error, *loadingcache.Entry[K, V]]{L: err}
 			close(wl)
 		}
+	}
+}
+
+// detachWaitlists removes the waitlists for the given keys from the map and
+// returns them in key order. Once detached, a waitlist is owned exclusively
+// by the caller and can be worked on outside the mutex.
+func (l *SingleFlightLoader[K, V]) detachWaitlists(keys []K) [][]chan either[error, *loadingcache.Entry[K, V]] {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	waitlists := make([][]chan either[error, *loadingcache.Entry[K, V]], len(keys))
+	for i, k := range keys {
+		waitlists[i] = l.waitlists[k]
 		delete(l.waitlists, k)
 	}
+	return waitlists
 }
