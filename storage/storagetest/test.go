@@ -145,16 +145,16 @@ func TestConsistency(t *testing.T, provider func() (loadingcache.CacheStorage[ui
 
 			expiresAt := time.Now().Add(time.Hour)
 			patterns := []loadingcache.Entry[uint8, int8]{
-				{0, 1},
-				{1, 2},
-				{2, 3},
-				{3, 4},
-				{4, 5},
-				{251, 124},
-				{252, 125},
-				{253, 126},
-				{254, 127},
-				{255, -128},
+				{Key: 0, Value: 1},
+				{Key: 1, Value: 2},
+				{Key: 2, Value: 3},
+				{Key: 3, Value: 4},
+				{Key: 4, Value: 5},
+				{Key: 251, Value: 124},
+				{Key: 252, Value: 125},
+				{Key: 253, Value: 126},
+				{Key: 254, Value: 127},
+				{Key: 255, Value: -128},
 			}
 			rand.Shuffle(len(patterns), func(i, j int) {
 				patterns[i], patterns[j] = patterns[j], patterns[i]
