@@ -2,7 +2,9 @@ package panicutil_test
 
 import (
 	"errors"
+	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 
@@ -142,4 +144,37 @@ func TestDDS(t *testing.T) {
 			t.Errorf("expected no error, got: %v", err)
 		}
 	})
+}
+
+func TestDDSNilPanic(t *testing.T) {
+	// Even when recover returns nil, a panic must retain its stack and must
+	// not be mistaken for Goexit. Exercise both supported runtime modes.
+	for _, mode := range []string{"0", "1"} {
+		t.Run("panicnil="+mode, func(t *testing.T) {
+			t.Setenv("GODEBUG", os.Getenv("GODEBUG")+",panicnil="+mode)
+			dds := panicutil.DoubleDeferSandwich{
+				OnGoexit: func() { t.Error("panic(nil) was mistaken for Goexit") },
+			}
+			err := dds.Invoke(func() error { panic(nil) })
+			var recovered *panics.ErrRecovered
+			if !errors.As(err, &recovered) {
+				t.Fatalf("expected *panics.ErrRecovered, got %T", err)
+			}
+			if (mode == "1") != (recovered.Value == nil) {
+				t.Fatalf("panicnil=%s: unexpected recovered value %v", mode, recovered.Value)
+			}
+			if len(recovered.Callers) == 0 || !strings.Contains(string(recovered.Stack), "TestDDSNilPanic") {
+				t.Fatal("panic stack was lost")
+			}
+		})
+	}
+}
+
+func BenchmarkDDSNormalReturn(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := panicutil.DDS(func() error { return nil }); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

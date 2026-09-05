@@ -1,8 +1,15 @@
-// Package omcindex provides an in-memory implementation of the index interface
-// for the loading-cache library. It maps secondary keys to primary keys and
-// supports concurrent reads with atomic updates.
+// Package omcindex provides an in-memory implementation of the
+// loadingcache.Index interface. It maps secondary keys to primary keys.
 //
-// Basic Usage:
+// Refresh loads the whole mapping from a loadingcache.IndexSource and publishes
+// it as an immutable snapshot. Reads load the current snapshot atomically
+// without taking a lock and return copies of its slices.
+// Refresh calls run one at a time. Each call retrieves the whole mapping with
+// its own context after the call is made, so N concurrent calls retrieve it up
+// to N times. A call waiting for another refresh returns when its context is
+// done, and an older retrieval never overwrites a newer snapshot.
+//
+// # Basic usage
 //
 //	// Create an index source
 //	source := index.FunctionIndexSource[string, int](
@@ -29,9 +36,9 @@
 //	results, err := idx.GetMulti(ctx, []string{"user1", "user2"})
 //	// results maps each key to its values
 //
-// Background Refreshing:
+// # Background refreshing
 //
-// Use with intervalupdater for automatic updates:
+// Use intervalupdater for periodic refreshes:
 //
 //	updater := intervalupdater.NewIntervalIndexUpdater(
 //	    idx,                  // The index
@@ -42,15 +49,18 @@
 //	)
 //	updater.LaunchBackgroundUpdater(ctx)
 //
-// OnMemoryIndex Features:
+// # Behavior
 //
-// - Thread-safe for concurrent reads
-// - Atomic index updates via Refresh()
-// - First reads block until index is initialized
-// - All operations respect context cancellation
-// - Copies returned data to prevent mutation
+//   - Reads block until the first successful Refresh, including one that returns an empty result
+//   - Get and GetMulti return an already-canceled context's error, even after initialization
+//   - A failed Refresh keeps the previous snapshot
+//   - Refresh returns an already-canceled context's error without calling the source
+//   - If the source calls runtime.Goexit, the goroutine running that Refresh exits without
+//     affecting other Refresh calls; readers of an uninitialized index propagate the Goexit
+//     until a Refresh succeeds
+//   - Returned slices are copies, so callers cannot mutate the index
 //
-// The implementation is optimized for read-heavy workloads where updates
-// are infrequent. When initialized with many keys or large value slices,
-// memory usage scales proportionally.
+// The implementation suits read-heavy workloads with infrequent refreshes:
+// a refresh rebuilds the whole mapping, while a read only loads a pointer and
+// copies the matching slice.
 package omcindex

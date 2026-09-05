@@ -21,6 +21,44 @@ var (
 	errLoader  = errors.New("loader error")
 )
 
+func TestIndexedLoadingCacheAlreadyCanceled(t *testing.T) {
+	t.Parallel()
+	for _, wantErr := range []error{context.Canceled, context.DeadlineExceeded} {
+		t.Run(wantErr.Error(), func(t *testing.T) {
+			t.Parallel()
+			var ctx context.Context
+			if wantErr == context.Canceled {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(t.Context())
+				cancel()
+			} else {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithDeadline(t.Context(), time.Unix(0, 0))
+				defer cancel()
+			}
+			idx := &index.FunctionsIndex[int, int]{
+				GetFunc: func(context.Context, int) ([]int, error) {
+					t.Error("index was called with an already-canceled context")
+					return nil, nil
+				},
+				GetMultiFunc: func(context.Context, []int) (map[int][]int, error) {
+					t.Error("index was called with an already-canceled context")
+					return nil, nil
+				},
+			}
+			cache := loadingcache.NewIndexedLoadingCache(loadingcache.LoadingCache[int, int]{}, idx)
+			if entries, err := cache.FindBySecondaryKey(ctx, 1); entries != nil || !errors.Is(err, wantErr) {
+				t.Errorf("FindBySecondaryKey: %v, %v; want nil, %v", entries, err, wantErr)
+			}
+			for _, keys := range [][]int{nil, {1, 2}} {
+				if entries, err := cache.FindBySecondaryKeys(ctx, keys); entries != nil || !errors.Is(err, wantErr) {
+					t.Errorf("FindBySecondaryKeys(%v): %v, %v; want nil, %v", keys, entries, err, wantErr)
+				}
+			}
+		})
+	}
+}
+
 func TestIndexedLoadingCache_FindBySecondaryKey(t *testing.T) {
 	t.Parallel()
 

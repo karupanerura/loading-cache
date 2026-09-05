@@ -16,13 +16,13 @@ type ExpirationPolicy interface {
 
 // GeneralExpirationPolicy is a policy that expires a value at a specific time.
 // It implements the standard time-based expiration check where a value is
-// considered expired if the current time is after the expiration time.
+// considered expired if the current time is at or after the expiration time.
 type GeneralExpirationPolicy struct{}
 
 var _ ExpirationPolicy = GeneralExpirationPolicy{}
 
-// IsExpired returns true if the current time is after the specified expiration time.
-// This is the standard expiration check: a value is expired when now >= expiresAt.
+// IsExpired returns true if the current time is at or after the specified expiration time,
+// that is, when now >= expiresAt.
 func (GeneralExpirationPolicy) IsExpired(now, expiresAt time.Time) bool {
 	return !expiresAt.After(now)
 }
@@ -68,11 +68,11 @@ var _ ExpirationPolicy = (*EarlyExpirationPolicy)(nil)
 
 // IsExpired checks if the value is expired.
 // This method has two behaviors:
-// 1. With probability (1-Percentage): behaves like GeneralExpirationPolicy, checking if now > expiresAt
-// 2. With probability Percentage: checks if (now + Duration) > expiresAt, causing early expiration
+//  1. With probability (1-Percentage): expired if now > expiresAt
+//  2. With probability Percentage: expired if (now + Duration) > expiresAt, causing early expiration
 //
 // By using this policy, different cache clients will likely refresh their caches at
-// different times, preventing multiple simultaneous refresh operations (thundering hard).
+// different times, preventing multiple simultaneous refresh operations (thundering herd).
 func (p *EarlyExpirationPolicy) IsExpired(now, expiresAt time.Time) bool {
 	if p.randFloat64() > p.Percentage {
 		return now.After(expiresAt)

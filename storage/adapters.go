@@ -73,9 +73,11 @@ var _ loadingcache.CacheStorage[uint8, struct{}] = (*FunctionsStorage[uint8, str
 type FunctionsStorage[K loadingcache.KeyConstraint, V loadingcache.ValueConstraint] struct {
 	// SetFunc stores a value with the given key and expiration time.
 	// If the key already exists, it should overwrite the existing value.
+	// The input entry must be cloned before storing it.
 	SetFunc func(context.Context, *loadingcache.CacheEntry[K, V]) error
 
 	// SetMultiFunc stores multiple values.
+	// Input entries may be nil and must be skipped. Non-nil entries must be cloned before storing.
 	SetMultiFunc func(context.Context, []*loadingcache.CacheEntry[K, V]) error
 
 	// GetFunc retrieves a value by its key.

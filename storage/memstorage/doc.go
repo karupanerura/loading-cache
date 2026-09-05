@@ -1,8 +1,11 @@
 // Package memstorage provides an in-memory implementation of the loadingcache.CacheStorage interface.
 //
-// The in-memory storage can be distributed across multiple buckets for improved performance and
-// concurrency. It supports various configuration options like custom key hashing, bucket sizing,
-// clock implementation, and value cloning strategies.
+// Keys are hashed into DefaultBucketsSize buckets, each guarded by its own
+// read-write lock, so operations on different buckets do not contend. Options
+// set the bucket count (WithBucketsSize), the key hash (WithKeyHash), the clock
+// (WithClock), the value cloner (WithCloner), and the expiration policy
+// (WithExpirationPolicy).
 //
-// The storage handles cache entry expiration and negative caching automatically.
+// Expired entries are skipped on read and deleted at that point; there is no
+// background sweeper.
 package memstorage

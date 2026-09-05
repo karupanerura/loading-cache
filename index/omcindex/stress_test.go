@@ -39,7 +39,7 @@ func TestStress_ConcurrentRefreshAndGet(t *testing.T) {
 	idx := omcindex.NewOnMemoryIndex[uint8, uint8](index.FunctionIndexSource[uint8, uint8](buildIndex))
 
 	// Getters canceled before the first refresh must return the context error
-	// instead of hanging, and must not leak the read lock.
+	// without preventing a later refresh.
 	var eg errgroup.Group
 	for i := 0; i < 4; i++ {
 		eg.Go(func() error {
@@ -55,7 +55,7 @@ func TestStress_ConcurrentRefreshAndGet(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A refresh after the canceled getters must not deadlock on a leaked read lock.
+	// A refresh must still complete after the waiting getters are canceled.
 	refreshDone := make(chan error, 1)
 	go func() {
 		refreshDone <- idx.Refresh(t.Context())
@@ -66,7 +66,7 @@ func TestStress_ConcurrentRefreshAndGet(t *testing.T) {
 			t.Fatalf("unexpected refresh error: %v", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("Refresh deadlocked: a canceled getter leaked the read lock")
+		t.Fatal("Refresh did not finish after the waiting getters were canceled")
 	}
 
 	verify := func(sk uint8, pks []uint8) error {
@@ -126,15 +126,12 @@ func TestStress_ConcurrentRefreshAndGet(t *testing.T) {
 					}
 				}
 
-				// Exercise the canceled-waiter path from time to time.
+				// Verify that already-canceled reads return before reading the snapshot.
 				if i%32 == 31 {
 					ctx, cancel := context.WithCancel(t.Context())
 					cancel()
-					if pks, err := idx.Get(ctx, sk); err == nil {
-						// The lock may have been acquired before the cancellation was observed.
-						if err := verify(sk, pks); err != nil {
-							return err
-						}
+					if _, err := idx.Get(ctx, sk); err != context.Canceled {
+						return fmt.Errorf("expected context.Canceled for initialized index, got %v", err)
 					}
 				}
 			}

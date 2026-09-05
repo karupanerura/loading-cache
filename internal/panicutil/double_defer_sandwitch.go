@@ -7,7 +7,7 @@ import (
 // DDS runs the function with double defer sandwich. It recovers from panics and returns them as errors.
 // If the function returns normally, it returns the error value returned from the given function.
 // If the function panics, it returns the recovered panic value as an error as *panics.ErrRecovered.
-// If the function calls runtime.Goexit, it returns nil.
+// If the function calls runtime.Goexit, the calling goroutine exits.
 func DDS(f func() error) error {
 	var dds DoubleDeferSandwich
 	return dds.Invoke(f)
@@ -44,7 +44,11 @@ func (dds *DoubleDeferSandwich) Invoke(f func() error) (err error) {
 	}()
 	func() {
 		defer func() {
-			panicValue = panics.NewRecovered(2, recover())
+			// Avoid collecting a stack on normal returns, including errors.
+			// Use normalReturn to preserve panic(nil)'s stack even with panicnil=1.
+			if !normalReturn {
+				panicValue = panics.NewRecovered(2, recover())
+			}
 		}()
 		err = f()
 		normalReturn = true

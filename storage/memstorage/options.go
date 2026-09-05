@@ -30,7 +30,7 @@ func WithKeyHash[K loadingcache.KeyConstraint, V loadingcache.ValueConstraint](f
 }
 
 // WithBucketsSize sets the number of buckets in the cache.
-// The number of buckets must be a natural number.
+// The number of buckets must be a natural number; it panics otherwise.
 func WithBucketsSize[K loadingcache.KeyConstraint, V loadingcache.ValueConstraint](bucketsSize int) Option[K, V] {
 	if bucketsSize <= 0 {
 		panic("bucketSize must be natural number")

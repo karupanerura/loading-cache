@@ -12,8 +12,13 @@ type LoadingCache[K KeyConstraint, V ValueConstraint] struct {
 
 // GetOrLoad retrieves the value associated with the given key from the cache.
 // If the value is not found in the cache, it loads the value from the external source.
-// If an error occurs during the loading process, the method returns the zero value of V and the error.
+// If an error occurs during the loading process, the method returns nil and the error.
+// An already-canceled context returns its error before accessing storage or loading,
+// including when the key is cached.
 func (c *LoadingCache[K, V]) GetOrLoad(ctx context.Context, key K) (*Entry[K, V], error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if cacheEntry, err := c.Storage.Get(ctx, key); err != nil {
 		return nil, err
 	} else if cacheEntry != nil {
@@ -29,8 +34,13 @@ func (c *LoadingCache[K, V]) GetOrLoad(ctx context.Context, key K) (*Entry[K, V]
 
 // GetOrLoadMulti retrieves multiple values from the cache.
 // If a value is not found in the cache, it loads the value from the external source.
-// If an error occurs during the loading process, the method returns the zero value of V and the error.
+// If an error occurs during the loading process, the method returns nil and the error.
+// An already-canceled context returns its error before accessing storage or loading,
+// including when all keys are cached or the input is empty.
 func (cl *LoadingCache[K, V]) GetOrLoadMulti(ctx context.Context, keys []K) ([]*Entry[K, V], error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	cacheEntries, err := cl.Storage.GetMulti(ctx, keys)
 	if err != nil {
 		return nil, err

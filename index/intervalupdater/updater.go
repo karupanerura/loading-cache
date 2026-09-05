@@ -17,8 +17,8 @@ type IntervalIndexUpdater struct {
 }
 
 // NewIntervalIndexUpdater creates a new IntervalIndexUpdater.
-// The IntervalIndexUpdater includes a callback mechanism for handling errors that occur during
-// background refresh operations. When creating an updater, you must provide an error handler function as a parameter.
+// onBackgroundError is called with each error returned by a background Refresh.
+// It must not be nil.
 func NewIntervalIndexUpdater(index loadingcache.RefreshIndex, interval time.Duration, onBackgroundError func(error)) *IntervalIndexUpdater {
 	return &IntervalIndexUpdater{
 		index:             index,
@@ -27,8 +27,9 @@ func NewIntervalIndexUpdater(index loadingcache.RefreshIndex, interval time.Dura
 	}
 }
 
-// LaunchBackgroundUpdater starts the background updater.
-// The background updater can be stopped by canceling the context passed to LaunchBackgroundUpdater.
+// LaunchBackgroundUpdater starts the background updater in a new goroutine.
+// The updater refreshes the index once immediately and then at every interval
+// until the context is canceled.
 func (u *IntervalIndexUpdater) LaunchBackgroundUpdater(ctx context.Context) {
 	go u.poll(ctx)
 }

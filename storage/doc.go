@@ -1,9 +1,8 @@
-// Package storage provides cache storage adapters and utilities for the loading-cache library.
+// Package storage provides adapters and error values for loadingcache.CacheStorage implementations.
 //
-// This package contains adapters such as SilentErrorStorage, which wraps any CacheStorage
-// implementation to silently handle errors, and FunctionsStorage, which allows building
-// custom storage implementations using function callbacks.
+// FunctionsStorage builds a storage from callbacks. SilentErrorStorage wraps a
+// storage and passes its errors to a callback instead of returning them, so a
+// failed read becomes a cache miss and a failed write is ignored.
 //
-// This package also defines common error types for storage operations:
-// ErrGet, ErrSet, ErrGetMulti, and ErrSetMulti.
+// The package also defines the error values ErrGet, ErrSet, ErrGetMulti, and ErrSetMulti.
 package storage

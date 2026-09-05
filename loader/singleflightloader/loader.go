@@ -8,6 +8,7 @@ import (
 
 	loadingcache "github.com/karupanerura/loading-cache"
 	"github.com/karupanerura/loading-cache/internal/panicutil"
+	"github.com/karupanerura/loading-cache/internal/sourceutil"
 )
 
 var errGoexit = errors.New("runtime.Goexit is called")
@@ -20,7 +21,7 @@ type SingleFlightLoader[K loadingcache.KeyConstraint, V loadingcache.ValueConstr
 	cloner  loadingcache.ValueCloner[V]
 	context func() context.Context
 
-	mu        sync.RWMutex
+	mu        sync.Mutex
 	waitlists map[K][]chan either[error, *loadingcache.Entry[K, V]]
 }
 
@@ -50,10 +51,19 @@ type either[L any, R any] struct {
 }
 
 // LoadAndStore retrieves a value associated with the given key from the source,
-// stores it in the storage with an expiration time, and returns the cloned value.
-// If an error occurs during retrieval or storage, it returns the zero value of V and the error.
+// stores it in the storage with an expiration time, and returns the value.
+// The value is copied with the cloner unless this caller is the last waiter
+// of a single-key load, which receives the value returned by the source.
+// If an error occurs during retrieval or storage, it returns nil and the error.
+// An already-canceled context returns its error without registering a load.
+// After registration, canceling a caller's wait does not cancel the shared load.
+// If a source, storage, cloner, or context provider callback calls runtime.Goexit during the shared load,
+// a waiting caller that receives that notification also calls runtime.Goexit.
 func (l *SingleFlightLoader[K, V]) LoadAndStore(ctx context.Context, key K) (*loadingcache.Entry[K, V], error) {
-	ch := l.registerKey(ctx, key)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	ch := l.registerKey(key)
 	select {
 	case e := <-ch:
 		if e.L != nil {
@@ -64,96 +74,72 @@ func (l *SingleFlightLoader[K, V]) LoadAndStore(ctx context.Context, key K) (*lo
 		}
 		return e.R, nil
 	case <-ctx.Done():
-		go func() {
-			<-ch
-		}()
+		// Each channel buffers its sole result, so cancellation needs no drainer.
 		return nil, ctx.Err()
 	}
 }
 
 // registerKey registers a key and returns a channel to receive the result.
-func (l *SingleFlightLoader[K, V]) registerKey(ctx context.Context, key K) chan either[error, *loadingcache.Entry[K, V]] {
+func (l *SingleFlightLoader[K, V]) registerKey(key K) chan either[error, *loadingcache.Entry[K, V]] {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	ch := make(chan either[error, *loadingcache.Entry[K, V]], 1)
 	l.waitlists[key] = append(l.waitlists[key], ch)
 	if len(l.waitlists[key]) == 1 {
-		go l.loadKeyAndStore(l.context(), key)
+		go l.loadKeyAndStore(key)
 	}
 	return ch
 }
 
 // loadKeyAndStore loads a value from the source and stores it in the storage.
-func (l *SingleFlightLoader[K, V]) loadKeyAndStore(ctx context.Context, key K) {
-	dds := panicutil.DoubleDeferSandwich{
-		OnGoexit: func() {
-			l.throwError(key, errGoexit)
-		},
-	}
-
-	// storage.Set must also run inside the double defer sandwich: if it calls
-	// runtime.Goexit (e.g. t.Fatal in a test storage), the waiters must be
-	// notified. Otherwise the waitlist entry would survive forever and every
-	// future call for the same key would join it without starting a new load.
-	var cacheEntry *loadingcache.CacheEntry[K, V]
-	if err := dds.Invoke(func() (err error) {
-		cacheEntry, err = l.source.Get(ctx, key)
-		if err != nil || cacheEntry == nil {
-			return
+func (l *SingleFlightLoader[K, V]) loadKeyAndStore(key K) {
+	l.load([]K{key}, func(ctx context.Context) ([]*loadingcache.CacheEntry[K, V], error) {
+		entry, err := l.source.Get(ctx, key)
+		if err != nil {
+			return nil, err
 		}
-		err = l.storage.Set(ctx, cacheEntry)
-		return
-	}); err != nil {
-		l.throwError(key, err)
-		return
-	}
-	l.sendEntry(key, cacheEntry)
+		if err := sourceutil.ValidateEntry(key, entry); err != nil {
+			return nil, err
+		}
+		entries := []*loadingcache.CacheEntry[K, V]{entry}
+		if entry == nil {
+			return entries, nil
+		}
+		return entries, l.storage.Set(ctx, entry)
+	})
 }
 
-// throwError sends an error to the waiting channels.
-func (l *SingleFlightLoader[K, V]) sendEntry(key K, cacheEntry *loadingcache.CacheEntry[K, V]) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	waitlist := l.waitlists[key]
-	for i, wl := range waitlist {
-		if cacheEntry == nil || cacheEntry.NegativeCache {
-			wl <- either[error, *loadingcache.Entry[K, V]]{R: nil}
-		} else {
-			entry := cacheEntry.Entry
-			if i != len(waitlist)-1 {
-				// note: we clone the value for each receiver except the last one
-				// to avoid unnecessary cloning when there are multiple receivers.
-				// Only the last receiver may take the original value: an earlier
-				// receiver starts using (and possibly mutating) its entry as soon
-				// as it is sent, while the original value is still being read here
-				// to produce the clones for the remaining receivers.
-				entry.Value = l.cloner.CloneValue(entry.Value)
-			}
-			wl <- either[error, *loadingcache.Entry[K, V]]{R: &entry}
+// entriesForWaiters finishes cloning before any channel is sent or closed.
+// If a cloner panics or calls Goexit, all waiters for this key can still
+// receive the failure without sending to an already closed channel.
+func (l *SingleFlightLoader[K, V]) entriesForWaiters(cacheEntry *loadingcache.CacheEntry[K, V], count int, transferOriginal bool) []*loadingcache.Entry[K, V] {
+	entries := make([]*loadingcache.Entry[K, V], count)
+	if cacheEntry == nil || cacheEntry.NegativeCache {
+		return entries
+	}
+	for i := range entries {
+		entry := cacheEntry.Entry
+		if !transferOriginal || i != count-1 {
+			entry.Value = l.cloner.CloneValue(entry.Value)
 		}
-		close(wl)
+		entries[i] = &entry
 	}
-	// delete (not truncate) so that the map does not grow with every key ever loaded
-	delete(l.waitlists, key)
-}
-
-// throwError sends an error to the waiting channels.
-func (l *SingleFlightLoader[K, V]) throwError(k K, err error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	for _, wl := range l.waitlists[k] {
-		wl <- either[error, *loadingcache.Entry[K, V]]{L: err}
-		close(wl)
-	}
-	delete(l.waitlists, k)
+	return entries
 }
 
 // LoadAndStoreMulti loads multiple entries from the source using the provided keys,
 // stores them in the cache, and returns the loaded entries. If an error occurs during
 // the loading or storing process, it returns the error.
+// An already-canceled context returns its error without registering any loads.
+// After registration, canceling a caller's wait does not cancel the shared loads.
+// If a source, storage, cloner, or context provider callback calls runtime.Goexit during a shared load,
+// a waiting caller that receives that notification also calls runtime.Goexit.
 func (l *SingleFlightLoader[K, V]) LoadAndStoreMulti(ctx context.Context, keys []K) ([]*loadingcache.Entry[K, V], error) {
-	channels := l.registerKeys(ctx, keys)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	channels := l.registerKeys(keys)
 	return l.awaitChannels(ctx, channels)
 }
 
@@ -174,12 +160,6 @@ func (l *SingleFlightLoader[K, V]) awaitChannels(ctx context.Context, channels [
 			}
 			entries[i] = e.R
 		case <-ctx.Done():
-			offset := i
-			go func() {
-				for _, ch := range channels[offset:] {
-					<-ch
-				}
-			}()
 			return nil, ctx.Err()
 		}
 	}
@@ -190,7 +170,7 @@ func (l *SingleFlightLoader[K, V]) awaitChannels(ctx context.Context, channels [
 }
 
 // registerKeys registers keys and returns channels to receive the results.
-func (l *SingleFlightLoader[K, V]) registerKeys(ctx context.Context, keys []K) []chan either[error, *loadingcache.Entry[K, V]] {
+func (l *SingleFlightLoader[K, V]) registerKeys(keys []K) []chan either[error, *loadingcache.Entry[K, V]] {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -205,78 +185,76 @@ func (l *SingleFlightLoader[K, V]) registerKeys(ctx context.Context, keys []K) [
 		channels[i] = ch
 	}
 	if len(targetKeys) != 0 {
-		go l.loadKeysAndStore(l.context(), targetKeys)
+		go l.loadKeysAndStore(targetKeys)
 	}
 	return channels
 }
 
 // loadKeysAndStore loads values from the source and stores them in the storage.
-func (l *SingleFlightLoader[K, V]) loadKeysAndStore(ctx context.Context, keys []K) {
-	dds := panicutil.DoubleDeferSandwich{
-		OnGoexit: func() {
-			l.throwErrors(keys, errGoexit)
-		},
-	}
-
-	// storage.SetMulti must also run inside the double defer sandwich: if it
-	// calls runtime.Goexit (e.g. t.Fatal in a test storage), the waiters must
-	// be notified. Otherwise the waitlist entries would survive forever and
-	// every future call for the same keys would join them without starting a
-	// new load.
-	var entries []*loadingcache.CacheEntry[K, V]
-	if err := dds.Invoke(func() (err error) {
-		entries, err = l.source.GetMulti(ctx, keys)
+func (l *SingleFlightLoader[K, V]) loadKeysAndStore(keys []K) {
+	l.load(keys, func(ctx context.Context) ([]*loadingcache.CacheEntry[K, V], error) {
+		entries, err := l.source.GetMulti(ctx, keys)
 		if err != nil {
-			return
+			return nil, err
 		}
-		err = l.storage.SetMulti(ctx, entries)
-		return
-	}); err != nil {
-		l.throwErrors(keys, err)
-		return
-	}
-
-	l.sendEntries(keys, entries)
+		if err := sourceutil.ValidateEntries(keys, entries); err != nil {
+			return nil, err
+		}
+		return entries, l.storage.SetMulti(ctx, entries)
+	})
 }
 
-// sendEntries sends the entries to the waiting channels.
-func (l *SingleFlightLoader[K, V]) sendEntries(keys []K, cacheEntries []*loadingcache.CacheEntry[K, V]) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	for i, k := range keys {
-		cacheEntry := cacheEntries[i]
-		waitlist := l.waitlists[k]
-		for j, wl := range waitlist {
-			if cacheEntry == nil || cacheEntry.NegativeCache {
-				wl <- either[error, *loadingcache.Entry[K, V]]{R: nil}
-			} else {
-				entry := cacheEntry.Entry
-				if j != len(waitlist)-1 {
-					// note: we clone the value for each receiver except the last one
-					// to avoid unnecessary cloning when there are multiple receivers.
-					// Only the last receiver may take the original value: an earlier
-					// receiver starts using (and possibly mutating) its entry as soon
-					// as it is sent, while the original value is still being read here
-					// to produce the clones for the remaining receivers.
-					entry.Value = l.cloner.CloneValue(entry.Value)
+// load protects all user callbacks, from the context provider through cloning.
+// Each waiter receives exactly one result, including on panic or Goexit.
+func (l *SingleFlightLoader[K, V]) load(keys []K, fetchAndStore func(context.Context) ([]*loadingcache.CacheEntry[K, V], error)) {
+	var waitlists [][]chan either[error, *loadingcache.Entry[K, V]]
+	var entries [][]*loadingcache.Entry[K, V]
+	complete := func(err error) {
+		if waitlists == nil {
+			waitlists = l.detachWaitlists(keys)
+		}
+		for i, waitlist := range waitlists {
+			for j, wl := range waitlist {
+				result := either[error, *loadingcache.Entry[K, V]]{L: err}
+				if err == nil {
+					result.R = entries[i][j]
 				}
-				wl <- either[error, *loadingcache.Entry[K, V]]{R: &entry}
+				wl <- result
+				close(wl)
 			}
-			close(wl)
 		}
-		delete(l.waitlists, k)
 	}
+	dds := panicutil.DoubleDeferSandwich{
+		OnGoexit: func() { complete(errGoexit) },
+	}
+	err := dds.Invoke(func() error {
+		cacheEntries, err := fetchAndStore(l.context())
+		if err != nil {
+			return err
+		}
+		waitlists = l.detachWaitlists(keys)
+		// New loads may now register the same keys. Completion must use
+		// these captured waitlists, including if cloning panics or Goexits.
+		entries = make([][]*loadingcache.Entry[K, V], len(keys))
+		for i, waitlist := range waitlists {
+			// Values may share mutable fields across keys, so transfer an
+			// original only when the source was asked for a single key.
+			entries[i] = l.entriesForWaiters(cacheEntries[i], len(waitlist), len(keys) == 1)
+		}
+		return nil
+	})
+	// If a user callback calls Goexit, Invoke never returns; OnGoexit completes the load instead.
+	complete(err)
 }
 
-// throwErrors sends an error to the waiting channels.
-func (l *SingleFlightLoader[K, V]) throwErrors(keys []K, err error) {
+// detachWaitlists transfers ownership of the waitlists to the loading goroutine.
+func (l *SingleFlightLoader[K, V]) detachWaitlists(keys []K) [][]chan either[error, *loadingcache.Entry[K, V]] {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	for _, k := range keys {
-		for _, wl := range l.waitlists[k] {
-			wl <- either[error, *loadingcache.Entry[K, V]]{L: err}
-			close(wl)
-		}
+	waitlists := make([][]chan either[error, *loadingcache.Entry[K, V]], len(keys))
+	for i, k := range keys {
+		waitlists[i] = l.waitlists[k]
 		delete(l.waitlists, k)
 	}
+	return waitlists
 }

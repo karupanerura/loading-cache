@@ -27,8 +27,9 @@ func (NopValueCloner[V]) CloneValue(v V) V {
 }
 
 // DefaultValueCloner returns a default cloner for the given value type.
-// It returns a NopValueCloner if the value type does not have Clone or DeepCopy method.
-// The value type must implement Clone or DeepCopy method.
+// It uses the Clone or DeepCopy method of V when V has one.
+// For bool, numeric, string, and unsafe.Pointer types it returns a NopValueCloner.
+// It panics for any other type.
 func DefaultValueCloner[V ValueConstraint]() ValueCloner[V] {
 	var zero V
 	return defaultValueClonerAny[V](zero)
