@@ -48,6 +48,9 @@ func WithClock[K loadingcache.KeyConstraint, V loadingcache.ValueConstraint](clo
 }
 
 // WithCloner sets the value cloner to the storage.
+// If no cloner is set after the options are applied, including when this option is given nil,
+// the storage builds loadingcache.DefaultValueCloner.
+// A value type that the default cloner does not support can be stored with a non-nil cloner.
 func WithCloner[K loadingcache.KeyConstraint, V loadingcache.ValueConstraint](cloner loadingcache.ValueCloner[V]) Option[K, V] {
 	return optionFunc[K, V](func(o *options[K, V]) {
 		o.cloner = cloner
@@ -74,7 +77,6 @@ func defaultOptions[K loadingcache.KeyConstraint, V loadingcache.ValueConstraint
 		hashKey:          keyhash.GetOrCreateKeyHash[K](),
 		bucketsSize:      DefaultBucketsSize,
 		clock:            loadingcache.SystemClock,
-		cloner:           loadingcache.DefaultValueCloner[V](),
 		expirationPolicy: expiration.GeneralExpirationPolicy{},
 	}
 }

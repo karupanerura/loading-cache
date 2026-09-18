@@ -1,9 +1,13 @@
 package memstorage_test
 
 import (
+	"maps"
 	"strconv"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/google/go-cmp/cmp"
 	loadingcache "github.com/karupanerura/loading-cache"
 	"github.com/karupanerura/loading-cache/storage/memstorage"
 	"github.com/karupanerura/loading-cache/storage/storagetest"
@@ -123,6 +127,125 @@ func TestCloner(t *testing.T) {
 			), func() {}
 		})
 	})
+}
+
+func TestClonerForTypeWithoutCloneMethod(t *testing.T) {
+	t.Parallel()
+
+	for name, bucketsSize := range map[string]int{"SingleBucket": 1, "MultipleBucket": 8} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			// newStorage returns a storage for a map value type, which the default cloner does not support,
+			// and a counter of the calls to the given cloner.
+			newStorage := func() (loadingcache.CacheStorage[uint8, map[string]int], *atomic.Int64) {
+				var calls atomic.Int64
+				cloner := loadingcache.ValueClonerFunc[map[string]int](func(v map[string]int) map[string]int {
+					calls.Add(1)
+					return maps.Clone(v)
+				})
+				return memstorage.NewInMemoryStorage(
+					memstorage.WithBucketsSize[uint8, map[string]int](bucketsSize),
+					memstorage.WithCloner[uint8](cloner),
+				), &calls
+			}
+			newEntry := func(key uint8, value map[string]int) *loadingcache.CacheEntry[uint8, map[string]int] {
+				return &loadingcache.CacheEntry[uint8, map[string]int]{
+					Entry:     loadingcache.Entry[uint8, map[string]int]{Key: key, Value: value},
+					ExpiresAt: time.Now().Add(time.Hour),
+				}
+			}
+
+			t.Run("Single", func(t *testing.T) {
+				t.Parallel()
+
+				storage, calls := newStorage()
+				input := map[string]int{"a": 1}
+				if err := storage.Set(t.Context(), newEntry(1, input)); err != nil {
+					t.Fatal(err)
+				}
+				input["a"] = 2
+
+				got, err := storage.Get(t.Context(), 1)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if df := cmp.Diff(map[string]int{"a": 1}, got.Value); df != "" {
+					t.Errorf("stored value changed by mutating the input (-want +got):\n%s", df)
+				}
+				got.Value["a"] = 3
+
+				got, err = storage.Get(t.Context(), 1)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if df := cmp.Diff(map[string]int{"a": 1}, got.Value); df != "" {
+					t.Errorf("stored value changed by mutating a returned value (-want +got):\n%s", df)
+				}
+				if n := calls.Load(); n != 3 {
+					t.Errorf("expected the given cloner to be called 3 times, but got %d", n)
+				}
+			})
+
+			t.Run("Multi", func(t *testing.T) {
+				t.Parallel()
+
+				storage, calls := newStorage()
+				inputs := []map[string]int{{"a": 1}, {"b": 1}}
+				if err := storage.SetMulti(t.Context(), []*loadingcache.CacheEntry[uint8, map[string]int]{
+					newEntry(1, inputs[0]),
+					newEntry(2, inputs[1]),
+				}); err != nil {
+					t.Fatal(err)
+				}
+				inputs[0]["a"] = 2
+				inputs[1]["b"] = 2
+
+				want := []map[string]int{{"a": 1}, {"b": 1}}
+				got, err := storage.GetMulti(t.Context(), []uint8{1, 2})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if df := cmp.Diff(want, entryValues(got)); df != "" {
+					t.Errorf("stored values changed by mutating the inputs (-want +got):\n%s", df)
+				}
+				got[0].Value["a"] = 3
+				got[1].Value["b"] = 3
+
+				got, err = storage.GetMulti(t.Context(), []uint8{1, 2})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if df := cmp.Diff(want, entryValues(got)); df != "" {
+					t.Errorf("stored values changed by mutating returned values (-want +got):\n%s", df)
+				}
+				if n := calls.Load(); n != 6 {
+					t.Errorf("expected the given cloner to be called 6 times, but got %d", n)
+				}
+			})
+		})
+	}
+
+	t.Run("PanicWithoutCloner", func(t *testing.T) {
+		t.Parallel()
+
+		defer func() {
+			if r := recover(); r == nil {
+				t.Errorf("expected panic for a value type unsupported by the default cloner, but did not panic")
+			}
+		}()
+		memstorage.NewInMemoryStorage[uint8, map[string]int]()
+	})
+}
+
+func entryValues[K comparable, V any](entries []*loadingcache.CacheEntry[K, V]) []V {
+	values := make([]V, len(entries))
+	for i, entry := range entries {
+		if entry != nil {
+			values[i] = entry.Value
+		}
+	}
+	return values
 }
 
 func TestExpiration(t *testing.T) {

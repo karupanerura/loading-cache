@@ -41,6 +41,11 @@ func NewInMemoryStorage[K loadingcache.KeyConstraint, V loadingcache.ValueConstr
 	for _, opt := range opts {
 		opt.apply(&options)
 	}
+	if options.cloner == nil {
+		// Build the default cloner only when no cloner is set (a nil cloner counts as unset),
+		// so a custom cloner can be used for value types the default cloner does not support.
+		options.cloner = loadingcache.DefaultValueCloner[V]()
+	}
 
 	if options.bucketsSize == 1 {
 		return &storage[K, V]{
