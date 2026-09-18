@@ -239,7 +239,9 @@ admins, err := orIndex.Get(ctx, index.LeftKey[string, bool]("admin"))
 
 ### Background Index Updates
 
-`LaunchBackgroundUpdater` refreshes the index once immediately and then at every interval until the context is canceled. Refresh errors go to the callback:
+Unless the context is already canceled, `LaunchBackgroundUpdater` refreshes the index once immediately and then at every interval until the context is canceled. A refresh slower than the interval does not queue one refresh per missed tick, although the next refresh may start right after it returns. The updater checks the context before each refresh, but a refresh can still start if the context is canceled just after that check. Refresh errors go to the callback, including errors from a refresh that was running when the context was canceled. If a refresh calls `runtime.Goexit`, the updater stops without calling the callback.
+
+The updater waits for each refresh to return. With `OnMemoryIndex`, background refreshes also wait for manual `Refresh` calls, and canceling the updater's context ends that wait with the context error, which goes to the callback. A retrieval that has started stops only if the source honors its context; a source that ignores the context and never returns blocks further refreshes, and its error never reaches the callback:
 
 ```go
 updater := intervalupdater.NewIntervalIndexUpdater(
