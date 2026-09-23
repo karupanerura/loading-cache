@@ -260,7 +260,7 @@ updater.LaunchBackgroundUpdater(ctx)
 
 1. **Use value types the default cloner supports, or set a custom cloner.** The storage, the single-flight loader, and the indexed cache clone values so that callers cannot mutate cached data. The default cloner calls the value type's `Clone() V` or `DeepCopy() V` method (preferring `Clone`), passes primitive types through, and panics at construction time for any other type. An interface type is supported when it declares one of these methods itself; a nil interface value is returned as is. Interface types such as `any` and `error` are not supported even if the stored values have these methods. Each of them builds its own default cloner unless a non-nil cloner is given with its option: `memstorage.WithCloner`, `singleflightloader.WithCloner`, and `loadingcache.WithValueCloner`. For a type without these methods, such as a map, set a cloner on each of them that you use. For values that are never mutated after caching, `Clone` may return the receiver, or pass `loadingcache.NopValueCloner` to these options to skip copying.
 2. **Size the buckets to your write concurrency.** `memstorage` uses `DefaultBucketsSize` buckets, each with its own lock. Raise it with `WithBucketsSize` when many goroutines write at the same time.
-3. **Spread expirations.** Every entry needs `ExpiresAt`. When many entries expire at once, `expiration.EarlyExpirationPolicy` (set with `memstorage.WithExpirationPolicy`) expires some of them early at random so that refreshes do not all happen together.
+3. **Spread expirations.** Every entry needs `ExpiresAt`. When many entries expire at once, `expiration.EarlyExpirationPolicy` (set with `memstorage.WithExpirationPolicy`) expires some of them early at random so that refreshes do not all happen together. Like `GeneralExpirationPolicy`, it treats an entry as expired at its expiration time, or at `ExpiresAt - Duration` when it expires early.
 4. **Decide how storage errors surface.** Loaders and the cache return storage errors to the caller. To keep serving from the source instead, wrap the storage in `storage.SilentErrorStorage`, which passes errors to a callback and returns a cache miss.
 
 ## Changes in the next release
@@ -282,6 +282,7 @@ These changes are not yet released. Several of them are breaking.
 - `NewIntervalIndexUpdater` panics for a zero or negative interval. Previously the updater goroutine panicked after the first refresh, crashing the process; now the constructor fails even if the updater is never launched.
 - `LoadingCache.GetOrLoadMulti` returns an error when the storage's `GetMulti` returns a number of entries other than the number of keys. Previously a short result silently skipped loading some keys and a long result panicked.
 - `DefaultValueCloner` chooses the method from the static value type. Interface types that declare `Clone() V` or `DeepCopy() V` are now supported; other interface types, such as `any` and `error`, panic with a descriptive message instead of a reflection panic.
+- `EarlyExpirationPolicy` treats an entry as expired at its expiration time, as `GeneralExpirationPolicy` does. Previously it expired entries only after that time, so entries exactly at the boundary were returned.
 
 ## License
 

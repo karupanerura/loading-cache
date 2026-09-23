@@ -1,6 +1,7 @@
 package expiration_test
 
 import (
+	"math"
 	"math/rand/v2"
 	"sync"
 	"testing"
@@ -170,11 +171,11 @@ func TestEarlyExpirationPolicy(t *testing.T) {
 			t.Error("With 100% chance, should always apply early expiration")
 		}
 
-		// Test with zero duration
+		// Test with zero duration: expired at expiresAt, like the general policy
 		policy.Duration = 0
 		policy.Percentage = 1
-		if policy.IsExpired(now, now) {
-			t.Error("With zero early duration, should behave like general policy")
+		if !policy.IsExpired(now, now) {
+			t.Error("With zero early duration, should behave like general policy at the boundary")
 		}
 	})
 }
@@ -207,4 +208,75 @@ func TestEarlyExpirationPolicy_ConcurrentIsExpired(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// constSource is a rand.Source that always returns the same value,
+// which makes the branch chosen by EarlyExpirationPolicy deterministic.
+type constSource uint64
+
+func (s constSource) Uint64() uint64 { return uint64(s) }
+
+func TestEarlyExpirationPolicy_Boundary(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2023, 1, 1, 12, 0, 0, 0, time.UTC)
+	const earlyDuration = 10 * time.Minute
+
+	tests := []struct {
+		name      string
+		random    rand.Source
+		duration  time.Duration
+		deadline  time.Time // the time at which the entry becomes expired
+		wantEarly bool
+	}{
+		{
+			// Float64() is almost 1, which is above Percentage.
+			name:     "normal branch",
+			random:   constSource(math.MaxUint64),
+			duration: earlyDuration,
+			deadline: now,
+		},
+		{
+			// Float64() is 0, which is not above Percentage.
+			name:     "early branch",
+			random:   constSource(0),
+			duration: earlyDuration,
+			deadline: now.Add(earlyDuration),
+		},
+		{
+			name:     "early branch with zero duration",
+			random:   constSource(0),
+			duration: 0,
+			deadline: now,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			policy := &expiration.EarlyExpirationPolicy{
+				Duration:   tt.duration,
+				Percentage: 0.5,
+				Random:     rand.New(tt.random),
+			}
+			general := expiration.GeneralExpirationPolicy{}
+			for _, c := range []struct {
+				label     string
+				expiresAt time.Time
+				want      bool
+			}{
+				{"before the boundary", tt.deadline.Add(time.Nanosecond), false},
+				{"at the boundary", tt.deadline, true},
+				{"after the boundary", tt.deadline.Add(-time.Nanosecond), true},
+			} {
+				if got := policy.IsExpired(now, c.expiresAt); got != c.want {
+					t.Errorf("%s: IsExpired(now, %v) = %v, want %v", c.label, c.expiresAt, got, c.want)
+				}
+				// The same boundary as GeneralExpirationPolicy, shifted by Duration in the early branch.
+				shiftedNow := now.Add(tt.deadline.Sub(now))
+				if got := general.IsExpired(shiftedNow, c.expiresAt); got != c.want {
+					t.Errorf("%s: general policy disagrees: got %v, want %v", c.label, got, c.want)
+				}
+			}
+		})
+	}
 }

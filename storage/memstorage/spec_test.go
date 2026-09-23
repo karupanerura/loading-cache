@@ -1,7 +1,10 @@
 package memstorage_test
 
 import (
+	"context"
 	"maps"
+	"math"
+	"math/rand/v2"
 	"strconv"
 	"sync/atomic"
 	"testing"
@@ -9,6 +12,9 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	loadingcache "github.com/karupanerura/loading-cache"
+	"github.com/karupanerura/loading-cache/expiration"
+	"github.com/karupanerura/loading-cache/loader/pureloader"
+	"github.com/karupanerura/loading-cache/source"
 	"github.com/karupanerura/loading-cache/storage/memstorage"
 	"github.com/karupanerura/loading-cache/storage/storagetest"
 )
@@ -300,4 +306,84 @@ func TestNegativeCache(t *testing.T) {
 			return memstorage.NewInMemoryStorage(memstorage.WithBucketsSize[uint8, int8](8), memstorage.WithClock[uint8, int8](clock)), func() {}
 		})
 	})
+}
+
+// fixedRandSource is a rand.Source that always returns the same value,
+// which makes the branch chosen by EarlyExpirationPolicy deterministic.
+type fixedRandSource uint64
+
+func (s fixedRandSource) Uint64() uint64 { return uint64(s) }
+
+// TestEarlyExpirationPolicyBoundary verifies that entries, including negative-cache
+// entries, are not returned at their expiration boundary and that LoadingCache
+// reloads them from the source.
+func TestEarlyExpirationPolicyBoundary(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2023, 1, 1, 12, 0, 0, 0, time.UTC)
+	const earlyDuration = 5 * time.Minute
+	for _, tt := range []struct {
+		name      string
+		random    rand.Source
+		expiresAt time.Time
+	}{
+		{name: "normal branch", random: fixedRandSource(math.MaxUint64), expiresAt: now},
+		{name: "early branch", random: fixedRandSource(0), expiresAt: now.Add(earlyDuration)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			storage := memstorage.NewInMemoryStorage(
+				memstorage.WithClock[uint8, int8](loadingcache.ClockFunc(func() time.Time { return now })),
+				memstorage.WithExpirationPolicy[uint8, int8](&expiration.EarlyExpirationPolicy{
+					Duration:   earlyDuration,
+					Percentage: 0.5,
+					Random:     rand.New(tt.random),
+				}),
+			)
+			ctx := t.Context()
+			if err := storage.SetMulti(ctx, []*loadingcache.CacheEntry[uint8, int8]{
+				{Entry: loadingcache.Entry[uint8, int8]{Key: 1, Value: 10}, ExpiresAt: tt.expiresAt},
+				{Entry: loadingcache.Entry[uint8, int8]{Key: 2}, ExpiresAt: tt.expiresAt, NegativeCache: true},
+			}); err != nil {
+				t.Fatalf("SetMulti: %v", err)
+			}
+
+			entries, err := storage.GetMulti(ctx, []uint8{1, 2})
+			if err != nil {
+				t.Fatalf("GetMulti: %v", err)
+			}
+			if entries[0] != nil || entries[1] != nil {
+				t.Fatalf("GetMulti at the expiration boundary: got %v, want all nil", entryValues(entries))
+			}
+
+			var loaded []uint8
+			cache := &loadingcache.LoadingCache[uint8, int8]{
+				Storage: storage,
+				Loader: pureloader.NewPureLoader[uint8, int8](storage, &source.FunctionsSource[uint8, int8]{
+					GetMultiFunc: func(_ context.Context, keys []uint8) ([]*loadingcache.CacheEntry[uint8, int8], error) {
+						loaded = append(loaded, keys...)
+						entries := make([]*loadingcache.CacheEntry[uint8, int8], len(keys))
+						for i, key := range keys {
+							entries[i] = &loadingcache.CacheEntry[uint8, int8]{
+								Entry:     loadingcache.Entry[uint8, int8]{Key: key, Value: int8(key) * 100},
+								ExpiresAt: now.Add(time.Hour),
+							}
+						}
+						return entries, nil
+					},
+				}),
+			}
+			got, err := cache.GetOrLoadMulti(ctx, []uint8{1, 2})
+			if err != nil {
+				t.Fatalf("GetOrLoadMulti: %v", err)
+			}
+			if df := cmp.Diff([]uint8{1, 2}, loaded); df != "" {
+				t.Errorf("reloaded keys (-want +got):\n%s", df)
+			}
+			if got[0] == nil || got[0].Value != 100 || got[1] == nil || got[1].Value != -56 {
+				t.Errorf("GetOrLoadMulti: got %+v, want reloaded values", got)
+			}
+		})
+	}
 }

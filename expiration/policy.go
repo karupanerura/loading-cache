@@ -68,16 +68,19 @@ var _ ExpirationPolicy = (*EarlyExpirationPolicy)(nil)
 
 // IsExpired checks if the value is expired.
 // This method has two behaviors:
-//  1. With probability (1-Percentage): expired if now > expiresAt
-//  2. With probability Percentage: expired if (now + Duration) > expiresAt, causing early expiration
+//  1. With probability (1-Percentage): expired if now >= expiresAt
+//  2. With probability Percentage: expired if (now + Duration) >= expiresAt, causing early expiration
+//
+// Both branches use the same boundary as GeneralExpirationPolicy: an entry is
+// expired at its (possibly advanced) expiration time, not only after it.
 //
 // By using this policy, different cache clients will likely refresh their caches at
 // different times, preventing multiple simultaneous refresh operations (thundering herd).
 func (p *EarlyExpirationPolicy) IsExpired(now, expiresAt time.Time) bool {
 	if p.randFloat64() > p.Percentage {
-		return now.After(expiresAt)
+		return !expiresAt.After(now)
 	}
-	return now.Add(p.Duration).After(expiresAt)
+	return !expiresAt.After(now.Add(p.Duration))
 }
 
 func (p *EarlyExpirationPolicy) randFloat64() float64 {
