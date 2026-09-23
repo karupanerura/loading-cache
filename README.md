@@ -263,28 +263,6 @@ updater.LaunchBackgroundUpdater(ctx)
 3. **Spread expirations.** Every entry needs `ExpiresAt`. When many entries expire at once, `expiration.EarlyExpirationPolicy` (set with `memstorage.WithExpirationPolicy`) expires some of them early at random so that refreshes do not all happen together. Like `GeneralExpirationPolicy`, it treats an entry as expired at its expiration time, or at `ExpiresAt - Duration` when it expires early.
 4. **Decide how storage errors surface.** Loaders and the cache return storage errors to the caller. To keep serving from the source instead, wrap the storage in `storage.SilentErrorStorage`, which passes errors to a callback and returns a cache miss.
 
-## Changes in the next release
-
-These changes are not yet released. Several of them are breaking.
-
-- The minimum Go version in `go.mod` is now 1.26.0. CI runs on Go 1.26.x and 1.27.x.
-- `OnMemoryIndex.Refresh` treats a successful nil map as an initialized empty index. Errors preserve the previous data.
-- `OnMemoryIndex.Refresh` calls run one at a time. Each call retrieves the whole mapping with its own context after the call is made, so N concurrent calls retrieve it up to N times. A call waiting for another refresh returns when its context is done, and an older retrieval no longer overwrites a newer snapshot. If the source calls `runtime.Goexit`, the goroutine running that `Refresh` exits without affecting other `Refresh` calls, and readers of an uninitialized index propagate the Goexit until a later `Refresh` succeeds.
-- The no-op `OnMemoryIndex.Goexit()` method has been removed. Initialize and update the index with `Refresh`.
-- Calls require a non-nil context; use `context.Background()` or `context.TODO()` as appropriate.
-- An already-canceled context returns its error before any other work. `LoadingCache` checks before accessing storage, even for cache hits or empty batches. `IndexedLoadingCache` checks before querying the index, even for empty inputs or missing matches. `OnMemoryIndex` reads, `OnMemoryIndex.Refresh`, and loader calls check as well.
-- `SingleFlightLoader` does not register loads for already-canceled calls. A load that is already registered continues after a caller cancels its wait.
-- `SingleFlightLoader`'s context provider and cloner may run concurrently for different loads and must be safe for concurrent use.
-- `memstorage.NewInMemoryStorage` builds the default cloner only when no cloner is set after the options are applied (a nil cloner counts as unset), so a custom cloner can be used for value types without `Clone` or `DeepCopy`.
-- Loaders reject incorrect result counts and keys before storing them. Use `errors.Is(err, loadingcache.ErrInvalidSourceResult)` to identify these errors. Negative-cache entries must also set `Entry.Key` to the requested key.
-- `CompactSource.GetMulti` deduplicates input keys, then expands results to the original input order; repeated keys share the same entry. Nil entries are ignored and missing keys produce nil slots. Unrequested or duplicate result keys are rejected with an error wrapping `ErrInvalidSourceResult`.
-- `FunctionsSource` can derive either method from the other when only one callback is set. When both are set, their value and negative-cache semantics must agree.
-- `NewIntervalIndexUpdater` panics for a zero or negative interval. Previously the updater goroutine panicked after the first refresh, crashing the process; now the constructor fails even if the updater is never launched.
-- `LoadingCache.GetOrLoadMulti` returns an error when the storage's `GetMulti` returns a number of entries other than the number of keys. Previously a short result silently skipped loading some keys and a long result panicked.
-- `DefaultValueCloner` chooses the method from the static value type. Interface types that declare `Clone() V` or `DeepCopy() V` are now supported; other interface types, such as `any` and `error`, panic with a descriptive message instead of a reflection panic.
-- `EarlyExpirationPolicy` treats an entry as expired at its expiration time, as `GeneralExpirationPolicy` does. Previously it expired entries only after that time, so entries exactly at the boundary were returned.
-- `SingleFlightLoader.LoadAndStoreMulti` returns the first error it receives without waiting for slow loads of other keys. Previously it waited for all keys in input order and returned the error of the last failed position.
-
 ## License
 
 MIT License
