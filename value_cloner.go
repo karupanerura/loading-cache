@@ -1,6 +1,9 @@
 package loadingcache
 
-import "reflect"
+import (
+	"fmt"
+	"reflect"
+)
 
 // ValueCloner is an interface for cloning values.
 // It is used to clone values when they are stored in the cache.
@@ -27,15 +30,25 @@ func (NopValueCloner[V]) CloneValue(v V) V {
 }
 
 // DefaultValueCloner returns a default cloner for the given value type.
-// It uses the Clone or DeepCopy method of V when V has one.
-// For bool, numeric, string, and unsafe.Pointer types it returns a NopValueCloner.
-// It panics for any other type.
+// The cloner is chosen from the static type V, in this order:
+//
+//  1. If V has a method Clone() V, the cloner calls it.
+//  2. If V has a method DeepCopy() V, the cloner calls it.
+//  3. For bool, numeric, string, and unsafe.Pointer types, it returns a NopValueCloner.
+//
+// The methods must return V itself; methods returning any other type are ignored.
+// Methods take precedence over rule 3, so a named primitive type with a Clone
+// method is cloned by that method.
+//
+// V may be an interface type that declares Clone() V or DeepCopy() V.
+// A nil interface value is returned as is; any other value, including a typed
+// nil pointer stored in the interface, is passed to the method, which decides
+// how to handle it. Interface types that do not declare these methods, such
+// as any and error, are not supported even if the values stored in them have
+// such methods, because the cloner is chosen from V and not from each value.
+//
+// It panics for any unsupported type. Such types need an explicit ValueCloner.
 func DefaultValueCloner[V ValueConstraint]() ValueCloner[V] {
-	var zero V
-	return defaultValueClonerAny[V](zero)
-}
-
-func defaultValueClonerAny[V ValueConstraint](v any) ValueCloner[V] {
 	type cloner interface {
 		Clone() V
 	}
@@ -43,32 +56,38 @@ func defaultValueClonerAny[V ValueConstraint](v any) ValueCloner[V] {
 		DeepCopy() V
 	}
 
-	switch v.(type) {
-	case cloner:
+	typ := reflect.TypeFor[V]()
+	switch {
+	case typ.Implements(reflect.TypeFor[cloner]()):
 		return ValueClonerFunc[V](func(v V) V {
-			var a any = v
-			return a.(cloner).Clone()
+			c, ok := any(v).(cloner)
+			if !ok {
+				// Only a nil interface value fails the assertion.
+				return v
+			}
+			return c.Clone()
 		})
 
-	case deepCopier:
+	case typ.Implements(reflect.TypeFor[deepCopier]()):
 		return ValueClonerFunc[V](func(v V) V {
-			var a any = v
-			return a.(deepCopier).DeepCopy()
+			c, ok := any(v).(deepCopier)
+			if !ok {
+				// Only a nil interface value fails the assertion.
+				return v
+			}
+			return c.DeepCopy()
 		})
-
-	default:
-		return defaultValueClonerReflect[V](reflect.ValueOf(v).Type())
 	}
-}
 
-func defaultValueClonerReflect[V ValueConstraint](typ reflect.Type) ValueCloner[V] {
 	switch typ.Kind() {
 	case reflect.Bool, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
 		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
 		reflect.Uintptr, reflect.Float32, reflect.Float64, reflect.Complex64, reflect.Complex128,
 		reflect.String, reflect.UnsafePointer:
 		return NopValueCloner[V]{}
+	case reflect.Interface:
+		panic(fmt.Sprintf("loadingcache: interface type %v does not declare Clone() %v or DeepCopy() %v; set a ValueCloner explicitly", typ, typ, typ))
 	default:
-		panic("value type does not have Clone or DeepCopy method")
+		panic(fmt.Sprintf("loadingcache: value type %v has neither Clone() %v nor DeepCopy() %v method; set a ValueCloner explicitly", typ, typ, typ))
 	}
 }
