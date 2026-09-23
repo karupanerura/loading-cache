@@ -153,17 +153,8 @@ func TestOnMemoryIndex_Get_Concurrency(t *testing.T) {
 			},
 		)
 
-		// Create and initialize index
+		// Create an index without initializing it
 		idx := omcindex.NewOnMemoryIndex[uint8, uint8](source)
-
-		// Update index in background
-		go func() {
-			time.Sleep(1 * time.Second)
-			if err := idx.Refresh(t.Context()); err != nil {
-				t.Errorf("failed to initialize index: %v", err)
-				return
-			}
-		}()
 
 		// Test Get method
 		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
@@ -298,17 +289,8 @@ func TestOnMemoryInde_GetMulti_Concurrency(t *testing.T) {
 			},
 		)
 
-		// Create and initialize index
+		// Create an index without initializing it
 		idx := omcindex.NewOnMemoryIndex[uint8, uint8](source)
-
-		// Update index in background
-		go func() {
-			time.Sleep(1 * time.Second)
-			if err := idx.Refresh(t.Context()); err != nil {
-				t.Errorf("failed to initialize index: %v", err)
-				return
-			}
-		}()
 
 		// Test Get method
 		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)

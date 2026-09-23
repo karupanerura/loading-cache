@@ -34,12 +34,17 @@ type distributedStorage[K loadingcache.KeyConstraint, V loadingcache.ValueConstr
 }
 
 // NewInMemoryStorage creates a new in-memory cache storage.
-// The storage can be distributed across multiple buckets for improved performance and scalability.
-// The storage uses a hash function to distribute the keys across the buckets.
+// Keys are hashed into buckets (DefaultBucketsSize by default), each with its own
+// read-write lock, so operations on different buckets do not contend.
 func NewInMemoryStorage[K loadingcache.KeyConstraint, V loadingcache.ValueConstraint](opts ...Option[K, V]) loadingcache.CacheStorage[K, V] {
 	options := defaultOptions[K, V]()
 	for _, opt := range opts {
 		opt.apply(&options)
+	}
+	if options.cloner == nil {
+		// Build the default cloner only when no cloner is set (a nil cloner counts as unset),
+		// so a custom cloner can be used for value types the default cloner does not support.
+		options.cloner = loadingcache.DefaultValueCloner[V]()
 	}
 
 	if options.bucketsSize == 1 {

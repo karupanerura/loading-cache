@@ -42,7 +42,12 @@ func WithValueCloner[PrimaryKey KeyConstraint, SecondaryKey KeyConstraint, Value
 }
 
 // FindBySecondaryKey retrieves entries by secondary key.
+// An already-canceled context returns its error before querying the index,
+// even when no entries would match.
 func (c *IndexedLoadingCache[PrimaryKey, SecondaryKey, Value]) FindBySecondaryKey(ctx context.Context, sk SecondaryKey) ([]*Entry[PrimaryKey, Value], error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	pks, err := c.index.Get(ctx, sk)
 	if err != nil {
 		return nil, err
@@ -54,7 +59,12 @@ func (c *IndexedLoadingCache[PrimaryKey, SecondaryKey, Value]) FindBySecondaryKe
 }
 
 // FindBySecondaryKeys retrieves entries by secondary keys.
+// An already-canceled context returns its error before querying the index,
+// even when the input is empty or no entries would match.
 func (c *IndexedLoadingCache[PrimaryKey, SecondaryKey, Value]) FindBySecondaryKeys(ctx context.Context, sks []SecondaryKey) (map[SecondaryKey][]*Entry[PrimaryKey, Value], error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	m, err := c.index.GetMulti(ctx, sks)
 	if err != nil {
 		return nil, err

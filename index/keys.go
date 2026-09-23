@@ -16,6 +16,7 @@ type MaybeKey[K loadingcache.KeyConstraint] struct {
 	Empty bool
 }
 
+// Iter returns a sequence that yields the key once if it is present, and nothing otherwise.
 func (k *MaybeKey[K]) Iter() iter.Seq[K] {
 	return iter.Seq[K](func(yield func(K) bool) {
 		if !k.Empty && !yield(k.Key) {

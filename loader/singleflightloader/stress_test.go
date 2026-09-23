@@ -176,16 +176,13 @@ func TestStress_MixedOperations(t *testing.T) {
 					}
 				}
 
-				// Exercise the abandoned-waiter path with an already canceled context.
+				// Already-canceled calls must return before starting a load.
 				if i%16 == 15 {
 					ctx, cancel := context.WithCancel(t.Context())
 					cancel()
 					key := randKey()
-					if entry, err := loader.LoadAndStore(ctx, key); err == nil {
-						// The result may have been ready before the cancellation was observed.
-						if err := verifyEntry(key, entry); err != nil {
-							return err
-						}
+					if _, err := loader.LoadAndStore(ctx, key); err != context.Canceled {
+						return fmt.Errorf("expected context.Canceled, got %v", err)
 					}
 				}
 
@@ -203,7 +200,7 @@ func TestStress_MixedOperations(t *testing.T) {
 }
 
 // TestLoadAndStore_ValueIsolation pins the fix for the value-sharing race in
-// sendEntry/sendEntries: the uncloned original value may only be handed to the
+// result distribution: the uncloned original value may only be handed to the
 // last receiver, after the clones for all other receivers have been made.
 // A receiver may start mutating its value as soon as it receives it, so if an
 // earlier receiver got the original while later clones were still being made

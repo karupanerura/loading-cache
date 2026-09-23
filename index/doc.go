@@ -1,12 +1,13 @@
-// Package index provides utilities and implementations for secondary indexing in the
-// loading-cache library. It enables efficient lookups of cached items by secondary keys.
+// Package index provides secondary-index building blocks for the loading-cache
+// library. An index maps a secondary key to the primary keys of the cached
+// entries that match it.
 //
-// The primary subpackages are:
+// This package contains:
+//   - AndIndex and OrIndex, which combine two indexes and are queried with Keys
+//   - FunctionsIndex and FunctionIndexSource, which adapt functions to the
+//     loadingcache.Index and loadingcache.IndexSource interfaces
 //
-// - omcindex: On-memory implementation with atomic updates
-// - intervalupdater: Automatic index refreshing at timed intervals
-//
-// The index package is designed to integrate with the loading-cache library
-// for efficient caching with multiple access patterns. All implementations
-// follow consistent interface patterns and handle concurrency appropriately.
+// Implementations live in the subpackages:
+//   - omcindex: an in-memory index that serves reads from an atomically published snapshot
+//   - intervalupdater: refreshes an index in the background at a fixed interval
 package index

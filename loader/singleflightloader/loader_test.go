@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
@@ -160,30 +161,43 @@ func TestLoadAndStore_SetError(t *testing.T) {
 
 func TestLoadAndStore_ContextCancel(t *testing.T) {
 	t.Parallel()
-
-	src := &source.FunctionsSource[int, string]{
-		GetFunc: func(_ context.Context, i int) (*loadingcache.CacheEntry[int, string], error) {
-			time.Sleep(1 * time.Second)
-			return nil, errors.New("storage err")
-		},
-	}
-	store := &storage.FunctionsStorage[int, string]{
-		SetFunc: func(_ context.Context, entry *loadingcache.CacheEntry[int, string]) error {
-			return nil
-		},
-	}
-
-	options := []singleflightloader.Option[int, string]{
-		singleflightloader.WithCloner[int, string](loadingcache.NopValueCloner[string]{}),
-		singleflightloader.WithBackgroundContextProvider[int, string](t.Context),
-	}
-	loader := singleflightloader.NewSingleFlightLoader(store, src, options...)
-
-	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
-	defer cancel()
-	_, err := loader.LoadAndStore(ctx, 1)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("unexpected error: %v (expected: context deadline exceeded)", err)
+	for _, multi := range []bool{false, true} {
+		name := "Single"
+		if multi {
+			name = "Multi"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				sourceDone := make(chan struct{})
+				src := source.GetMultiFunctionSource[int, string](func(ctx context.Context, _ []int) ([]*loadingcache.CacheEntry[int, string], error) {
+					defer close(sourceDone)
+					time.Sleep(time.Second)
+					if err := ctx.Err(); err != nil {
+						t.Errorf("caller canceled the shared load: %v", err)
+					}
+					return nil, errors.New("source error")
+				})
+				loader := singleflightloader.NewSingleFlightLoader(
+					&storage.FunctionsStorage[int, string]{}, src,
+					singleflightloader.WithBackgroundContextProvider[int, string](t.Context),
+				)
+				ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+				defer cancel()
+				var err error
+				if multi {
+					_, err = loader.LoadAndStoreMulti(ctx, []int{1, 2, 3})
+				} else {
+					_, err = loader.LoadAndStore(ctx, 1)
+				}
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Errorf("got %v, want context.DeadlineExceeded", err)
+				}
+				// Advance fake time until the independent load finishes. The bubble
+				// then joins its goroutine, so no work survives this test.
+				<-sourceDone
+			})
+		})
 	}
 }
 
@@ -394,34 +408,5 @@ func TestLoadAndStoreMulti_SetMultiError(t *testing.T) {
 
 	if gotValues != nil {
 		t.Errorf("unexpected values: %v (expected: nil)", gotValues)
-	}
-}
-
-func TestLoadAndStoreMulti_ContextCancel(t *testing.T) {
-	t.Parallel()
-
-	src := &source.FunctionsSource[int, string]{
-		GetMultiFunc: func(ctx context.Context, keys []int) ([]*loadingcache.CacheEntry[int, string], error) {
-			time.Sleep(1 * time.Second)
-			return nil, errors.New("storage err")
-		},
-	}
-	store := &storage.FunctionsStorage[int, string]{
-		SetFunc: func(_ context.Context, entry *loadingcache.CacheEntry[int, string]) error {
-			return nil
-		},
-	}
-
-	options := []singleflightloader.Option[int, string]{
-		singleflightloader.WithCloner[int, string](loadingcache.NopValueCloner[string]{}),
-		singleflightloader.WithBackgroundContextProvider[int, string](t.Context),
-	}
-	loader := singleflightloader.NewSingleFlightLoader(store, src, options...)
-
-	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
-	defer cancel()
-	_, err := loader.LoadAndStoreMulti(ctx, []int{1, 2, 3})
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("unexpected error: %v (expected: context deadline exceeded)", err)
 	}
 }

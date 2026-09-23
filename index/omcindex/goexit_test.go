@@ -11,12 +11,12 @@ import (
 	"github.com/karupanerura/loading-cache/index/omcindex"
 )
 
-// TestOnMemoryIndex_GoexitReleasesLock verifies that a getter that propagates
-// runtime.Goexit (after the refresh goroutine called runtime.Goexit) releases
-// the read lock before exiting. If the lock leaks, a subsequent Refresh
-// deadlocks forever.
-func TestOnMemoryIndex_GoexitReleasesLock(t *testing.T) {
+// TestOnMemoryIndex_GoexitAllowsLaterRefresh verifies that readers propagate
+// a refresh's Goexit and that a subsequent Refresh can publish usable data.
+func TestOnMemoryIndex_GoexitAllowsLaterRefresh(t *testing.T) {
 	t.Parallel()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
 
 	var calls atomic.Int32
 	source := index.FunctionIndexSource[uint8, uint8](func(ctx context.Context) (map[uint8][]uint8, error) {
@@ -31,36 +31,36 @@ func TestOnMemoryIndex_GoexitReleasesLock(t *testing.T) {
 	refreshDone := make(chan struct{})
 	go func() {
 		defer close(refreshDone)
-		_ = idx.Refresh(context.Background())
+		_ = idx.Refresh(ctx)
 		t.Error("Refresh must not return normally when the source calls runtime.Goexit")
 	}()
-	<-refreshDone
+	waitOrFatal(t, ctx, refreshDone, "refresh did not finish")
 
 	// A getter observes the goexit state and propagates runtime.Goexit.
 	getDone := make(chan struct{})
 	go func() {
 		defer close(getDone)
-		_, _ = idx.Get(context.Background(), 1)
+		_, _ = idx.Get(ctx, 1)
 		t.Error("Get must not return normally after the refresh called runtime.Goexit")
 	}()
-	<-getDone
+	waitOrFatal(t, ctx, getDone, "reader did not propagate Goexit")
 
-	// A subsequent refresh must not deadlock on a leaked read lock.
+	// A subsequent refresh must still be able to publish a new snapshot.
 	refreshDone2 := make(chan error, 1)
 	go func() {
-		refreshDone2 <- idx.Refresh(context.Background())
+		refreshDone2 <- idx.Refresh(ctx)
 	}()
 	select {
 	case err := <-refreshDone2:
 		if err != nil {
 			t.Fatalf("unexpected refresh error: %v", err)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Refresh deadlocked: the goexit path in Get leaked the read lock")
+	case <-ctx.Done():
+		t.Fatal("Refresh did not finish after the reader propagated Goexit")
 	}
 
 	// The index must serve data afterwards.
-	pks, err := idx.Get(context.Background(), 1)
+	pks, err := idx.Get(ctx, 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
