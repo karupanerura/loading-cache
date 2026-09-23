@@ -169,6 +169,8 @@ src := &source.FunctionsSource[int, *User]{GetMultiFunc: compact.GetMulti}
 
 Do not call `compact.Get` in this setup: it calls `findUsers` directly without normalization.
 
+A storage's `GetMulti` must return one element per input position, with nil for a missing key. `LoadingCache` returns an error for a result of any other length instead of loading the keys.
+
 ## Advanced Usage
 
 ### Negative Caching
@@ -278,6 +280,7 @@ These changes are not yet released. Several of them are breaking.
 - `CompactSource.GetMulti` deduplicates input keys, then expands results to the original input order; repeated keys share the same entry. Nil entries are ignored and missing keys produce nil slots. Unrequested or duplicate result keys are rejected with an error wrapping `ErrInvalidSourceResult`.
 - `FunctionsSource` can derive either method from the other when only one callback is set. When both are set, their value and negative-cache semantics must agree.
 - `NewIntervalIndexUpdater` panics for a zero or negative interval. Previously the updater goroutine panicked after the first refresh, crashing the process; now the constructor fails even if the updater is never launched.
+- `LoadingCache.GetOrLoadMulti` returns an error when the storage's `GetMulti` returns a number of entries other than the number of keys. Previously a short result silently skipped loading some keys and a long result panicked.
 
 ## License
 

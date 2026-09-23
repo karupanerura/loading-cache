@@ -62,10 +62,13 @@ type CacheStorage[K KeyConstraint, V ValueConstraint] interface {
 	Get(context.Context, K) (*CacheEntry[K, V], error)
 
 	// GetMulti retrieves multiple values by keys.
-	// The order of the returned values matches the order of the input keys.
-	// If a key is not found or expired, it returns nil for that key.
+	// On success, it must return exactly one element per input position, including
+	// duplicated keys, in the order of the input keys. For an empty input, a nil or
+	// empty slice is valid.
+	// If a key is not found or expired, it returns nil at that position.
 	// If a key is cached as a negative cache, it should return a CacheEntry with NegativeCache set to true.
 	// It must clone the returned entries before returning them.
+	// LoadingCache rejects a result of any other length with an error.
 	GetMulti(context.Context, []K) ([]*CacheEntry[K, V], error)
 }
 

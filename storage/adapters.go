@@ -35,7 +35,9 @@ func (s *SilentErrorStorage[K, V]) Get(ctx context.Context, key K) (*loadingcach
 
 // GetMulti retrieves multiple entries from the underlying storage.
 // If an error occurs during the retrieval process and an OnError handler is set, the error
-// will be passed to the OnError handler. The method itself always returns the nil entries and nil error.
+// will be passed to the OnError handler, and the method returns len(keys) nil entries and nil error.
+// A result returned without an error is passed through as is, so an invalid
+// result length is detected by LoadingCache rather than reported to OnError.
 func (s *SilentErrorStorage[K, V]) GetMulti(ctx context.Context, keys []K) ([]*loadingcache.CacheEntry[K, V], error) {
 	entries, err := s.Storage.GetMulti(ctx, keys)
 	if err != nil {
@@ -87,8 +89,10 @@ type FunctionsStorage[K loadingcache.KeyConstraint, V loadingcache.ValueConstrai
 	GetFunc func(context.Context, K) (*loadingcache.CacheEntry[K, V], error)
 
 	// GetMultiFunc retrieves multiple values by keys.
-	// The order of the returned values matches the order of the input keys.
-	// If a key is not found or expired, it returns nil for that key.
+	// On success, it must return exactly one element per input position, including
+	// duplicated keys, in the order of the input keys. For an empty input, a nil or
+	// empty slice is valid.
+	// If a key is not found or expired, it returns nil at that position.
 	// If a key is cached as a negative cache, it should return a CacheEntry with NegativeCache set to true.
 	GetMultiFunc func(context.Context, []K) ([]*loadingcache.CacheEntry[K, V], error)
 }
