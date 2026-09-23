@@ -49,16 +49,16 @@ func TestLoadAndStoreMulti_SharedValuesAcrossKeys(t *testing.T) {
 	channels := l.registerKeys([]int{1, 2, 2})
 	last := l.registerKey(1)
 	close(release)
-	entries, err := l.awaitChannels(ctx, channels)
+	entries, err := l.await(ctx, channels)
 	if err != nil {
 		t.Fatal(err)
 	}
 	select {
-	case result := <-last:
-		if result.L != nil || result.R == nil {
+	case result := <-last.results:
+		if result.err != nil || result.entry == nil {
 			t.Fatalf("single-key receiver: %+v", result)
 		}
-		*result.R.Value.n = -1
+		*result.entry.Value.n = -1
 	case <-ctx.Done():
 		t.Fatal("single-key receiver did not finish")
 	}
@@ -179,27 +179,29 @@ func TestClonerFailureNotifiesWaiters(t *testing.T) {
 					return context.Background()
 				}
 				l := NewSingleFlightLoader(memstorage.NewInMemoryStorage[int, int](), src, WithCloner[int](cloner), WithBackgroundContextProvider[int, int](provider))
-				var channels []chan either[error, *loadingcache.Entry[int, int]]
+				var registered []*call[int, int]
 				if scenario.multi {
-					channels = l.registerKeys([]int{1, 1, 1, 2, 2, 2})
+					registered = append(registered, l.registerKeys([]int{1, 1, 1, 2, 2, 2}))
 				} else {
 					for range 3 {
-						channels = append(channels, l.registerKey(1))
+						registered = append(registered, l.registerKey(1))
 					}
 				}
 				close(release)
-				for i, ch := range channels {
-					select {
-					case result := <-ch:
-						want := failureErr
-						if failure == "Goexit" {
-							want = errGoexit
+				for i, c := range registered {
+					for range c.size {
+						select {
+						case result := <-c.results:
+							want := failureErr
+							if failure == "Goexit" {
+								want = errGoexit
+							}
+							if !errors.Is(result.err, want) {
+								t.Errorf("call %d position %d: got %v, want %v", i, result.pos, result.err, want)
+							}
+						case <-ctx.Done():
+							t.Fatal("cloner failure left waiters blocked")
 						}
-						if !errors.Is(result.L, want) {
-							t.Errorf("waiter %d: got %v, want %v", i, result.L, want)
-						}
-					case <-ctx.Done():
-						t.Fatal("cloner failure left waiters blocked")
 					}
 				}
 				entries, err := l.LoadAndStoreMulti(ctx, []int{1, 2})
@@ -262,9 +264,9 @@ func TestClonerFailureDoesNotAffectNewLoad(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal("old cloner did not start")
 			}
-			registered := make(chan []chan either[error, *loadingcache.Entry[int, int]], 1)
+			registered := make(chan *call[int, int], 1)
 			go func() { registered <- l.registerKeys([]int{1}) }()
-			var newChannels []chan either[error, *loadingcache.Entry[int, int]]
+			var newChannels *call[int, int]
 			select {
 			case newChannels = <-registered:
 			case <-ctx.Done():
@@ -276,22 +278,22 @@ func TestClonerFailureDoesNotAffectNewLoad(t *testing.T) {
 				t.Fatal("new load joined the old waitlist")
 			}
 			failNow()
-			for _, ch := range oldChannels {
+			for range oldChannels.size {
 				select {
-				case result := <-ch:
+				case result := <-oldChannels.results:
 					want := failureErr
 					if goexit {
 						want = errGoexit
 					}
-					if !errors.Is(result.L, want) {
-						t.Errorf("old waiter: got %v, want %v", result.L, want)
+					if !errors.Is(result.err, want) {
+						t.Errorf("old waiter: got %v, want %v", result.err, want)
 					}
 				case <-ctx.Done():
 					t.Fatal("old waiter lost its failure notification")
 				}
 			}
 			finishNew()
-			entries, err := l.awaitChannels(ctx, newChannels)
+			entries, err := l.await(ctx, newChannels)
 			if err != nil || len(entries) != 1 || entries[0] == nil || entries[0].Value != 42 {
 				t.Fatalf("new load received the old load's failure: %v, %v", entries, err)
 			}

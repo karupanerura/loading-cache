@@ -21,6 +21,10 @@
 // after joining in-flight loads, not the number of keys in the caller's input.
 // How deep the copy goes depends on the cloner.
 //
+// LoadAndStoreMulti returns when all input positions have results or when it
+// receives the first error, without waiting for the other loads, which continue
+// in the background.
+//
 // The SingleFlightLoader can be configured with options:
 //   - WithCloner: Allows setting a custom value cloner to use when copying values returned to requesters
 //   - WithBackgroundContextProvider: Sets a custom context provider for background operations

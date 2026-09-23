@@ -95,7 +95,7 @@ func TestSlowClonerDoesNotBlockOtherKeys(t *testing.T) {
 		t.Error("cloning key 1 blocks loading unrelated key 2")
 	}
 	finishClone()
-	if _, err := l.awaitChannels(ctx, channels); err != nil {
+	if _, err := l.await(ctx, channels); err != nil {
 		t.Error(err)
 	}
 }

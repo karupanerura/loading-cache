@@ -136,7 +136,7 @@ Loaders fetch entries from a source and store them in the storage:
 - **singleflightloader**: Coalesces concurrent loads of the same key into one source call
 - **pureloader**: Calls the source once per call without coalescing. Intended for sequential use and tests.
 
-The storage clones the entries it stores and returns, which keeps callers from mutating cached data. `SingleFlightLoader` also clones the values it hands to callers, which keeps callers from sharing values with each other: when a load asks the source for one key, the last waiter receives the source's value and the other waiters receive copies; when a load asks the source for several keys at once, every returned value is copied because the source may share mutable data across keys. `PureLoader` does not clone, so repeated keys in one call may share a value.
+The storage clones the entries it stores and returns, which keeps callers from mutating cached data. `SingleFlightLoader` also clones the values it hands to callers, which keeps callers from sharing values with each other: when a load asks the source for one key, the last waiter receives the source's value and the other waiters receive copies; when a load asks the source for several keys at once, every returned value is copied because the source may share mutable data across keys. `PureLoader` does not clone, so repeated keys in one call may share a value. `LoadAndStoreMulti` of `SingleFlightLoader` returns the first error it receives without waiting for loads of the other keys, which continue in the background.
 
 ```go
 loader := singleflightloader.NewSingleFlightLoader(
@@ -283,6 +283,7 @@ These changes are not yet released. Several of them are breaking.
 - `LoadingCache.GetOrLoadMulti` returns an error when the storage's `GetMulti` returns a number of entries other than the number of keys. Previously a short result silently skipped loading some keys and a long result panicked.
 - `DefaultValueCloner` chooses the method from the static value type. Interface types that declare `Clone() V` or `DeepCopy() V` are now supported; other interface types, such as `any` and `error`, panic with a descriptive message instead of a reflection panic.
 - `EarlyExpirationPolicy` treats an entry as expired at its expiration time, as `GeneralExpirationPolicy` does. Previously it expired entries only after that time, so entries exactly at the boundary were returned.
+- `SingleFlightLoader.LoadAndStoreMulti` returns the first error it receives without waiting for slow loads of other keys. Previously it waited for all keys in input order and returned the error of the last failed position.
 
 ## License
 

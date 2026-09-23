@@ -22,7 +22,7 @@ type SingleFlightLoader[K loadingcache.KeyConstraint, V loadingcache.ValueConstr
 	context func() context.Context
 
 	mu        sync.Mutex
-	waitlists map[K][]chan either[error, *loadingcache.Entry[K, V]]
+	waitlists map[K][]waiter[K, V]
 }
 
 var _ loadingcache.SourceLoader[uint8, struct{}] = (*SingleFlightLoader[uint8, struct{}])(nil)
@@ -34,7 +34,7 @@ func NewSingleFlightLoader[K loadingcache.KeyConstraint, V loadingcache.ValueCon
 		source:    source,
 		cloner:    nil,
 		context:   context.Background,
-		waitlists: map[K][]chan either[error, *loadingcache.Entry[K, V]]{},
+		waitlists: map[K][]waiter[K, V]{},
 	}
 	for _, o := range opts {
 		o.apply(loader)
@@ -45,9 +45,30 @@ func NewSingleFlightLoader[K loadingcache.KeyConstraint, V loadingcache.ValueCon
 	return loader
 }
 
-type either[L any, R any] struct {
-	L L
-	R R
+// result is the outcome of a load for one input position of a call.
+type result[K loadingcache.KeyConstraint, V loadingcache.ValueConstraint] struct {
+	pos   int
+	err   error
+	entry *loadingcache.Entry[K, V]
+}
+
+// waiter is an input position of a call waiting for a load of its key.
+type waiter[K loadingcache.KeyConstraint, V loadingcache.ValueConstraint] struct {
+	results chan<- result[K, V]
+	pos     int
+}
+
+// call is a registered LoadAndStore or LoadAndStoreMulti call.
+// Its channel buffers one result per input position, and each position
+// receives exactly one result, so loads never block on sending even after
+// the caller stopped waiting, and the channel never needs to be closed.
+type call[K loadingcache.KeyConstraint, V loadingcache.ValueConstraint] struct {
+	results chan result[K, V]
+	size    int
+}
+
+func newCall[K loadingcache.KeyConstraint, V loadingcache.ValueConstraint](size int) *call[K, V] {
+	return &call[K, V]{results: make(chan result[K, V], size), size: size}
 }
 
 // LoadAndStore retrieves a value associated with the given key from the source,
@@ -63,33 +84,24 @@ func (l *SingleFlightLoader[K, V]) LoadAndStore(ctx context.Context, key K) (*lo
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	ch := l.registerKey(key)
-	select {
-	case e := <-ch:
-		if e.L != nil {
-			if e.L == errGoexit {
-				runtime.Goexit()
-			}
-			return nil, e.L
-		}
-		return e.R, nil
-	case <-ctx.Done():
-		// Each channel buffers its sole result, so cancellation needs no drainer.
-		return nil, ctx.Err()
+	entries, err := l.await(ctx, l.registerKey(key))
+	if err != nil {
+		return nil, err
 	}
+	return entries[0], nil
 }
 
-// registerKey registers a key and returns a channel to receive the result.
-func (l *SingleFlightLoader[K, V]) registerKey(key K) chan either[error, *loadingcache.Entry[K, V]] {
+// registerKey registers a key and returns the call to receive the result.
+func (l *SingleFlightLoader[K, V]) registerKey(key K) *call[K, V] {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	ch := make(chan either[error, *loadingcache.Entry[K, V]], 1)
-	l.waitlists[key] = append(l.waitlists[key], ch)
+	c := newCall[K, V](1)
+	l.waitlists[key] = append(l.waitlists[key], waiter[K, V]{results: c.results, pos: 0})
 	if len(l.waitlists[key]) == 1 {
 		go l.loadKeyAndStore(key)
 	}
-	return ch
+	return c
 }
 
 // loadKeyAndStore loads a value from the source and stores it in the storage.
@@ -110,9 +122,9 @@ func (l *SingleFlightLoader[K, V]) loadKeyAndStore(key K) {
 	})
 }
 
-// entriesForWaiters finishes cloning before any channel is sent or closed.
-// If a cloner panics or calls Goexit, all waiters for this key can still
-// receive the failure without sending to an already closed channel.
+// entriesForWaiters finishes cloning before any result is sent.
+// If a cloner panics or calls Goexit, all waiters for this key receive the
+// failure instead, and no waiter receives both a value and the failure.
 func (l *SingleFlightLoader[K, V]) entriesForWaiters(cacheEntry *loadingcache.CacheEntry[K, V], count int, transferOriginal bool) []*loadingcache.Entry[K, V] {
 	entries := make([]*loadingcache.Entry[K, V], count)
 	if cacheEntry == nil || cacheEntry.NegativeCache {
@@ -133,61 +145,61 @@ func (l *SingleFlightLoader[K, V]) entriesForWaiters(cacheEntry *loadingcache.Ca
 // the loading or storing process, it returns the error.
 // An already-canceled context returns its error without registering any loads.
 // After registration, canceling a caller's wait does not cancel the shared loads.
+//
+// The keys may be served by several shared loads, including loads started by
+// other callers. The call returns the entries after results for all input
+// positions arrive, or returns the first error it receives without waiting for
+// the remaining loads, which continue in the background. Which error is returned
+// when several loads fail depends on the order in which the call receives them,
+// and when an error and the context's completion are both available, either may be returned.
 // If a source, storage, cloner, or context provider callback calls runtime.Goexit during a shared load,
 // a waiting caller that receives that notification also calls runtime.Goexit.
 func (l *SingleFlightLoader[K, V]) LoadAndStoreMulti(ctx context.Context, keys []K) ([]*loadingcache.Entry[K, V], error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	channels := l.registerKeys(keys)
-	return l.awaitChannels(ctx, channels)
+	return l.await(ctx, l.registerKeys(keys))
 }
 
-// awaitChannels waits for the channels to receive the results and returns the entries.
-func (l *SingleFlightLoader[K, V]) awaitChannels(ctx context.Context, channels []chan either[error, *loadingcache.Entry[K, V]]) ([]*loadingcache.Entry[K, V], error) {
-	entries := make([]*loadingcache.Entry[K, V], len(channels))
-
-	var lastErr error
-	for i, ch := range channels {
+// await receives the results for all input positions of the call and returns
+// the entries in input order. It returns on the first error it receives.
+// Results sent after it returns stay in the call's buffer, so it needs no drainer.
+func (l *SingleFlightLoader[K, V]) await(ctx context.Context, c *call[K, V]) ([]*loadingcache.Entry[K, V], error) {
+	entries := make([]*loadingcache.Entry[K, V], c.size)
+	for range c.size {
 		select {
-		case e := <-ch:
-			if e.L != nil {
-				lastErr = e.L
-				if e.L == errGoexit {
+		case r := <-c.results:
+			if r.err != nil {
+				if r.err == errGoexit {
 					runtime.Goexit()
 				}
-				continue
+				return nil, r.err
 			}
-			entries[i] = e.R
+			entries[r.pos] = r.entry
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
 	}
-	if lastErr != nil {
-		return nil, lastErr
-	}
 	return entries, nil
 }
 
-// registerKeys registers keys and returns channels to receive the results.
-func (l *SingleFlightLoader[K, V]) registerKeys(keys []K) []chan either[error, *loadingcache.Entry[K, V]] {
+// registerKeys registers keys and returns the call to receive the results.
+func (l *SingleFlightLoader[K, V]) registerKeys(keys []K) *call[K, V] {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	targetKeys := make([]K, 0, len(keys))
-	channels := make([]chan either[error, *loadingcache.Entry[K, V]], len(keys))
+	c := newCall[K, V](len(keys))
 	for i, key := range keys {
-		ch := make(chan either[error, *loadingcache.Entry[K, V]], 1)
-		l.waitlists[key] = append(l.waitlists[key], ch)
+		l.waitlists[key] = append(l.waitlists[key], waiter[K, V]{results: c.results, pos: i})
 		if len(l.waitlists[key]) == 1 {
 			targetKeys = append(targetKeys, key)
 		}
-		channels[i] = ch
 	}
 	if len(targetKeys) != 0 {
 		go l.loadKeysAndStore(targetKeys)
 	}
-	return channels
+	return c
 }
 
 // loadKeysAndStore loads values from the source and stores them in the storage.
@@ -207,20 +219,20 @@ func (l *SingleFlightLoader[K, V]) loadKeysAndStore(keys []K) {
 // load protects all user callbacks, from the context provider through cloning.
 // Each waiter receives exactly one result, including on panic or Goexit.
 func (l *SingleFlightLoader[K, V]) load(keys []K, fetchAndStore func(context.Context) ([]*loadingcache.CacheEntry[K, V], error)) {
-	var waitlists [][]chan either[error, *loadingcache.Entry[K, V]]
+	var waitlists [][]waiter[K, V]
 	var entries [][]*loadingcache.Entry[K, V]
 	complete := func(err error) {
 		if waitlists == nil {
 			waitlists = l.detachWaitlists(keys)
 		}
 		for i, waitlist := range waitlists {
-			for j, wl := range waitlist {
-				result := either[error, *loadingcache.Entry[K, V]]{L: err}
+			for j, w := range waitlist {
+				r := result[K, V]{pos: w.pos, err: err}
 				if err == nil {
-					result.R = entries[i][j]
+					r.entry = entries[i][j]
 				}
-				wl <- result
-				close(wl)
+				// The call's buffer has room for one result per position.
+				w.results <- r
 			}
 		}
 	}
@@ -248,10 +260,10 @@ func (l *SingleFlightLoader[K, V]) load(keys []K, fetchAndStore func(context.Con
 }
 
 // detachWaitlists transfers ownership of the waitlists to the loading goroutine.
-func (l *SingleFlightLoader[K, V]) detachWaitlists(keys []K) [][]chan either[error, *loadingcache.Entry[K, V]] {
+func (l *SingleFlightLoader[K, V]) detachWaitlists(keys []K) [][]waiter[K, V] {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	waitlists := make([][]chan either[error, *loadingcache.Entry[K, V]], len(keys))
+	waitlists := make([][]waiter[K, V], len(keys))
 	for i, k := range keys {
 		waitlists[i] = l.waitlists[k]
 		delete(l.waitlists, k)
