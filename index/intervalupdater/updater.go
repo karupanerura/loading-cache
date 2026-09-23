@@ -2,6 +2,7 @@ package intervalupdater
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	loadingcache "github.com/karupanerura/loading-cache"
@@ -18,8 +19,15 @@ type IntervalIndexUpdater struct {
 
 // NewIntervalIndexUpdater creates a new IntervalIndexUpdater.
 // onBackgroundError is called with each error returned by a background Refresh.
-// It must not be nil.
+// It must not be nil; NewIntervalIndexUpdater panics otherwise.
+// interval must be positive; NewIntervalIndexUpdater panics otherwise.
 func NewIntervalIndexUpdater(index loadingcache.RefreshIndex, interval time.Duration, onBackgroundError func(error)) *IntervalIndexUpdater {
+	if interval <= 0 {
+		panic(fmt.Sprintf("intervalupdater: non-positive interval %v for NewIntervalIndexUpdater", interval))
+	}
+	if onBackgroundError == nil {
+		panic("intervalupdater: nil onBackgroundError for NewIntervalIndexUpdater")
+	}
 	return &IntervalIndexUpdater{
 		index:             index,
 		interval:          interval,

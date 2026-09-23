@@ -212,6 +212,49 @@ func TestLaunchBackgroundUpdater_RefreshGoexit(t *testing.T) {
 	})
 }
 
+func TestNewIntervalIndexUpdater_NonPositiveInterval(t *testing.T) {
+	t.Parallel()
+	for _, interval := range []time.Duration{0, -time.Second} {
+		t.Run(interval.String(), func(t *testing.T) {
+			t.Parallel()
+			var refreshCalls, errCalls atomic.Int32
+			idx := mockRefreshIndex(func(context.Context) error {
+				refreshCalls.Add(1)
+				return nil
+			})
+
+			func() {
+				defer func() {
+					if recover() == nil {
+						t.Errorf("NewIntervalIndexUpdater(%v): expected panic", interval)
+					}
+				}()
+				intervalupdater.NewIntervalIndexUpdater(idx, interval, func(error) {
+					errCalls.Add(1)
+				})
+			}()
+
+			if got := refreshCalls.Load(); got != 0 {
+				t.Errorf("Refresh calls: got %d, want 0", got)
+			}
+			if got := errCalls.Load(); got != 0 {
+				t.Errorf("error callback calls: got %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestNewIntervalIndexUpdater_NilOnBackgroundError(t *testing.T) {
+	t.Parallel()
+	idx := mockRefreshIndex(func(context.Context) error { return nil })
+	defer func() {
+		if recover() == nil {
+			t.Error("NewIntervalIndexUpdater(nil onBackgroundError): expected panic")
+		}
+	}()
+	intervalupdater.NewIntervalIndexUpdater(idx, time.Minute, nil)
+}
+
 // stallingIndexSource returns {1: [call number]} for each GetAll call, except
 // that the call number stallAt ignores its context and waits for release.
 type stallingIndexSource struct {

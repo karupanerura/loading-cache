@@ -239,7 +239,7 @@ admins, err := orIndex.Get(ctx, index.LeftKey[string, bool]("admin"))
 
 ### Background Index Updates
 
-Unless the context is already canceled, `LaunchBackgroundUpdater` refreshes the index once immediately and then at every interval until the context is canceled. A refresh slower than the interval does not queue one refresh per missed tick, although the next refresh may start right after it returns. The updater checks the context before each refresh, but a refresh can still start if the context is canceled just after that check. Refresh errors go to the callback, including errors from a refresh that was running when the context was canceled. If a refresh calls `runtime.Goexit`, the updater stops without calling the callback.
+Unless the context is already canceled, `LaunchBackgroundUpdater` refreshes the index once immediately and then at every interval until the context is canceled. A refresh slower than the interval does not queue one refresh per missed tick, although the next refresh may start right after it returns. The updater checks the context before each refresh, but a refresh can still start if the context is canceled just after that check. Refresh errors go to the callback, including errors from a refresh that was running when the context was canceled. If a refresh calls `runtime.Goexit`, the updater stops without calling the callback. The interval must be positive; `NewIntervalIndexUpdater` panics otherwise.
 
 The updater waits for each refresh to return. With `OnMemoryIndex`, background refreshes also wait for manual `Refresh` calls, and canceling the updater's context ends that wait with the context error, which goes to the callback. A retrieval that has started stops only if the source honors its context; a source that ignores the context and never returns blocks further refreshes, and its error never reaches the callback:
 
@@ -277,6 +277,7 @@ These changes are not yet released. Several of them are breaking.
 - Loaders reject incorrect result counts and keys before storing them. Use `errors.Is(err, loadingcache.ErrInvalidSourceResult)` to identify these errors. Negative-cache entries must also set `Entry.Key` to the requested key.
 - `CompactSource.GetMulti` deduplicates input keys, then expands results to the original input order; repeated keys share the same entry. Nil entries are ignored and missing keys produce nil slots. Unrequested or duplicate result keys are rejected with an error wrapping `ErrInvalidSourceResult`.
 - `FunctionsSource` can derive either method from the other when only one callback is set. When both are set, their value and negative-cache semantics must agree.
+- `NewIntervalIndexUpdater` panics for a zero or negative interval. Previously the updater goroutine panicked after the first refresh, crashing the process; now the constructor fails even if the updater is never launched.
 
 ## License
 
